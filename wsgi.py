@@ -41,7 +41,11 @@ def run_trend_bot():
     original_scan = bot.scan_market
     
     def patched_scan(*args, **kwargs):
-        write_status(trend_status="running", last_trend=time.strftime("%Y-%m-%d %H:%M:%S"))
+        # Format in Indian Standard Time (IST)
+        from datetime import datetime, timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        ist_time = datetime.now(timezone.utc).astimezone(ist)
+        write_status(trend_status="running", last_trend=ist_time.strftime("%Y-%m-%d %H:%M:%S IST"))
         return original_scan(*args, **kwargs)
     
     bot.scan_market = patched_scan
@@ -59,7 +63,11 @@ def run_reversion_bot():
     original_scan = bot.scan_market
     
     def patched_scan(*args, **kwargs):
-        write_status(reversion_status="running", last_rev=time.strftime("%Y-%m-%d %H:%M:%S"))
+        # Format in Indian Standard Time (IST)
+        from datetime import datetime, timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        ist_time = datetime.now(timezone.utc).astimezone(ist)
+        write_status(reversion_status="running", last_rev=ist_time.strftime("%Y-%m-%d %H:%M:%S IST"))
         return original_scan(*args, **kwargs)
     
     bot.scan_market = patched_scan
