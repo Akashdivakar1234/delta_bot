@@ -16,15 +16,19 @@ def run_trend_bot():
     global bot_status
     import trend_bot
     bot_status["trend_bot"] = "running"
-    # Monkeypatch trend bot's main loop to update timestamp
-    original_scan = trend_bot.scan_market
+    
+    # Instantiate the bot and patch its instance scan_market
+    bot = trend_bot.DeltaTrendBot()
+    original_scan = bot.scan_market
+    
     def patched_scan(*args, **kwargs):
         bot_status["last_scan_trend"] = time.strftime("%Y-%m-%d %H:%M:%S")
         return original_scan(*args, **kwargs)
-    trend_bot.scan_market = patched_scan
+    
+    bot.scan_market = patched_scan
     
     try:
-        trend_bot.main()
+        bot.start()
     except Exception as e:
         bot_status["trend_bot"] = f"failed: {str(e)}"
 
@@ -32,15 +36,19 @@ def run_reversion_bot():
     global bot_status
     import reversion_bot
     bot_status["reversion_bot"] = "running"
-    # Monkeypatch reversion bot's main loop to update timestamp
-    original_scan = reversion_bot.scan_market
+    
+    # Instantiate the bot and patch its instance scan_market
+    bot = reversion_bot.DeltaReversionBot()
+    original_scan = bot.scan_market
+    
     def patched_scan(*args, **kwargs):
         bot_status["last_scan_reversion"] = time.strftime("%Y-%m-%d %H:%M:%S")
         return original_scan(*args, **kwargs)
-    reversion_bot.scan_market = patched_scan
+    
+    bot.scan_market = patched_scan
     
     try:
-        reversion_bot.main()
+        bot.start()
     except Exception as e:
         bot_status["reversion_bot"] = f"failed: {str(e)}"
 
