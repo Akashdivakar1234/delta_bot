@@ -528,8 +528,29 @@ class DeltaReversionBot:
             )
             if res.get("success"):
                 log_success(f"Order successfully filled on Exchange: {res}")
+                # Log success to dashboard
+                try:
+                    import json, os
+                    status = {"reversion_bot": "running", "latest_error": f"SUCCESS: Reversion order filled for {final_size} ADAUSD"}
+                    if os.path.exists("bot_status.json"):
+                        with open("bot_status.json", "r") as f:
+                            status = {**json.load(f), **status}
+                    with open("bot_status.json", "w") as f:
+                        json.dump(status, f)
+                except: pass
             else:
                 log_error(f"Exchange rejected order: {res}")
+                # Log error to dashboard
+                try:
+                    import json, os
+                    err_msg = res.get("error", str(res))
+                    status = {"latest_error": f"REJECTED: Reversion Bot order failed - {err_msg}"}
+                    if os.path.exists("bot_status.json"):
+                        with open("bot_status.json", "r") as f:
+                            status = {**json.load(f), **status}
+                    with open("bot_status.json", "w") as f:
+                        json.dump(status, f)
+                except: pass
 
     def start(self):
         log_info("Starting Bollinger/RSI Mean Reversion Bot...")

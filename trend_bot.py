@@ -492,8 +492,29 @@ class DeltaTrendBot:
             )
             if res.get("success"):
                 log_success(f"Order successfully filled on Exchange: {res}")
+                # Log success to dashboard
+                try:
+                    import json, os
+                    status = {"trend_bot": "running", "latest_error": f"SUCCESS: Trend order filled for {final_size} XRPUSD"}
+                    if os.path.exists("bot_status.json"):
+                        with open("bot_status.json", "r") as f:
+                            status = {**json.load(f), **status}
+                    with open("bot_status.json", "w") as f:
+                        json.dump(status, f)
+                except: pass
             else:
                 log_error(f"Exchange rejected order: {res}")
+                # Log error to dashboard
+                try:
+                    import json, os
+                    err_msg = res.get("error", str(res))
+                    status = {"latest_error": f"REJECTED: Trend Bot order failed - {err_msg}"}
+                    if os.path.exists("bot_status.json"):
+                        with open("bot_status.json", "r") as f:
+                            status = {**json.load(f), **status}
+                    with open("bot_status.json", "w") as f:
+                        json.dump(status, f)
+                except: pass
 
     def start(self):
         log_info("Starting Donchian Trend Following Bot...")

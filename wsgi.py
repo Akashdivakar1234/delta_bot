@@ -8,12 +8,13 @@ app = Flask(__name__)
 
 STATUS_FILE = "bot_status.json"
 
-def write_status(trend_status=None, reversion_status=None, last_trend=None, last_rev=None):
+def write_status(trend_status=None, reversion_status=None, last_trend=None, last_rev=None, latest_error=None):
     status = {
         "trend_bot": "starting",
         "reversion_bot": "starting",
         "last_scan_trend": "never",
-        "last_scan_reversion": "never"
+        "last_scan_reversion": "never",
+        "latest_error": "none"
     }
     if os.path.exists(STATUS_FILE):
         try:
@@ -26,6 +27,7 @@ def write_status(trend_status=None, reversion_status=None, last_trend=None, last
     if reversion_status: status["reversion_bot"] = reversion_status
     if last_trend: status["last_scan_trend"] = last_trend
     if last_rev: status["last_scan_reversion"] = last_rev
+    if latest_error: status["latest_error"] = latest_error
     
     try:
         with open(STATUS_FILE, "w") as f:
