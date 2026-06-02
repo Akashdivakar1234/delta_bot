@@ -41,7 +41,7 @@ def run_trend_bot():
     original_scan = bot.scan_market
     
     def patched_scan(*args, **kwargs):
-        write_status(last_trend=time.strftime("%Y-%m-%d %H:%M:%S"))
+        write_status(trend_status="running", last_trend=time.strftime("%Y-%m-%d %H:%M:%S"))
         return original_scan(*args, **kwargs)
     
     bot.scan_market = patched_scan
@@ -59,7 +59,7 @@ def run_reversion_bot():
     original_scan = bot.scan_market
     
     def patched_scan(*args, **kwargs):
-        write_status(last_rev=time.strftime("%Y-%m-%d %H:%M:%S"))
+        write_status(reversion_status="running", last_rev=time.strftime("%Y-%m-%d %H:%M:%S"))
         return original_scan(*args, **kwargs)
     
     bot.scan_market = patched_scan
