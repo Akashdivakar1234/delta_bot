@@ -1,0 +1,18 @@
+{
+  "api_key": "LyMfP0V5IOZw9eaxLI6ZrcPX0ArcWl",
+  "api_secret": "nbuWClB7gCXH6CUGj0MPNTlEu3VARpPKabmRtF2TcMyquXBxJbetKVweS8X2",
+  "is_testnet": false,
+  "use_india_delta": true,
+  "symbol": "ADAUSD",
+  "capital_mode": "auto",
+  "static_capital_inr": 350.0,
+  "risk_percent": 2.0,
+  "leverage": 3,
+  "usd_inr_rate_fallback": 85.0,
+  "poll_interval_seconds": 60,
+  "bb_period": 20,
+  "bb_std": 2.0,
+  "rsi_period": 14,
+  "stop_loss_pct": 1.5,
+  "resolution": "15m"
+}

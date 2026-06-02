@@ -1,0 +1,16 @@
+{
+  "api_key": "LyMfP0V5IOZw9eaxLI6ZrcPX0ArcWl",
+  "api_secret": "nbuWClB7gCXH6CUGj0MPNTlEu3VARpPKabmRtF2TcMyquXBxJbetKVweS8X2",
+  "is_testnet": false,
+  "use_india_delta": true,
+  "symbol": "XRPUSD",
+  "capital_mode": "auto",
+  "static_capital_inr": 350.0,
+  "risk_percent": 2.0,
+  "target_rr_ratio": 3.0,
+  "leverage": 3,
+  "usd_inr_rate_fallback": 85.0,
+  "poll_interval_seconds": 60,
+  "channel_period": 20,
+  "resolution": "15m"
+}
