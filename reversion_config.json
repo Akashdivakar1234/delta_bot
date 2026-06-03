@@ -1,6 +1,14 @@
 {
-  "api_key": "LyMfP0V5IOZw9eaxLI6ZrcPX0ArcWl",
-  "api_secret": "nbuWClB7gCXH6CUGj0MPNTlEu3VARpPKabmRtF2TcMyquXBxJbetKVweS8X2",
+  "keys": [
+    {
+      "api_key": "LyMfP0V5IOZw9eaxLI6ZrcPX0ArcWl",
+      "api_secret": "nbuWClB7gCXH6CUGj0MPNTlEu3VARpPKabmRtF2TcMyquXBxJbetKVweS8X2"
+    },
+    {
+      "api_key": "6Lvx5QzXCuk4DVqHHxsKMLsr2oA6Ql",
+      "api_secret": "ANxasroEC9g1yRAMSDLVJNtkLXHSOljfXcgdwkUa6HOTyOPol1BvJ5Ft3Pbz"
+    }
+  ],
   "is_testnet": false,
   "use_india_delta": true,
   "symbol": "ADAUSD",

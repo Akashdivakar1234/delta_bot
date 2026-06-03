@@ -71,9 +71,9 @@ class DNSCacheAdapter(requests.adapters.HTTPAdapter):
 
 # --- DELTA EXCHANGE API CLIENT ---
 class DeltaExchangeAPI:
-    def __init__(self, api_key, api_secret, is_testnet=True, use_india_delta=True):
-        self.api_key = api_key
-        self.api_secret = api_secret
+    def __init__(self, keys, is_testnet=True, use_india_delta=True):
+        self.keys = keys  # List of dicts with {"api_key": ..., "api_secret": ...}
+        self.active_key_index = 0
         self.is_testnet = is_testnet
         self.use_india_delta = use_india_delta
         
@@ -100,10 +100,14 @@ class DeltaExchangeAPI:
             log_warning(f"Initial DNS resolution failed ({e}). Will retry on first request.")
             log_info(f"Initialized Delta Client on: {self.base_url}")
         
-    def _generate_signature(self, method, path, timestamp, body=""):
+    def _get_active_credentials(self):
+        k = self.keys[self.active_key_index]
+        return k["api_key"], k["api_secret"]
+        
+    def _generate_signature(self, method, path, timestamp, body="", api_secret=None):
         message = method + str(timestamp) + path + body
         signature = hmac.new(
-            self.api_secret.encode('utf-8'),
+            api_secret.encode('utf-8'),
             message.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
@@ -112,34 +116,39 @@ class DeltaExchangeAPI:
     def request(self, method, endpoint, params=None, payload=None, auth=True):
         url = f"{self.base_url}{endpoint}"
         
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "python-requests"
-        }
-        
-        if auth:
-            timestamp = int(time.time())
-            body_str = ""
-            if payload:
-                body_str = json.dumps(payload)
-                
-            sig_path = endpoint
-            if params:
-                query_str = "&".join([f"{k}={v}" for k, v in params.items()])
-                sig_path = f"{endpoint}?{query_str}"
-                
-            signature = self._generate_signature(method, sig_path, timestamp, body_str)
-            
-            headers.update({
-                "api-key": self.api_key,
-                "signature": signature,
-                "timestamp": str(timestamp)
-            })
-        
         max_retries = 6
-        retry_waits = [5, 10, 15, 20, 25, 30]  # Longer waits to survive Wi-Fi reconnections
+        retry_waits = [5, 10, 15, 20, 25, 30]
+        
+        # Run a retry loop with potential key rotation on IP whitelist issues
         
         for attempt in range(1, max_retries + 1):
+            # Dynamic header construction based on active key
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "python-requests"
+            }
+            
+            api_key, api_secret = self._get_active_credentials()
+            
+            if auth:
+                timestamp = int(time.time())
+                body_str = ""
+                if payload:
+                    body_str = json.dumps(payload)
+                    
+                sig_path = endpoint
+                if params:
+                    query_str = "&".join([f"{k}={v}" for k, v in params.items()])
+                    sig_path = f"{endpoint}?{query_str}"
+                    
+                signature = self._generate_signature(method, sig_path, timestamp, body_str, api_secret)
+                
+                headers.update({
+                    "api-key": api_key,
+                    "signature": signature,
+                    "timestamp": str(timestamp)
+                })
+                
             try:
                 if method == "GET":
                     response = self.session.get(url, headers=headers, params=params, timeout=15)
@@ -161,8 +170,20 @@ class DeltaExchangeAPI:
                 else:
                     try:
                         err_json = response.json()
-                        return {"success": False, "error": err_json.get("error", {}).get("message", response.text)}
-                    except:
+                        err_code = err_json.get("error", {}).get("code")
+                        err_msg = err_json.get("error", {}).get("message", response.text)
+                        
+                        # Dynamic Key Rotation: Check for IP Whitelist rejection
+                        if err_code == "ip_not_whitelisted_for_api_key":
+                            next_index = (self.active_key_index + 1) % len(self.keys)
+                            if next_index != self.active_key_index:
+                                log_warning(f"IP whitelist failure with API key index {self.active_key_index} ({err_msg}). Rotating to key index {next_index}...")
+                                self.active_key_index = next_index
+                                # Force retry instantly
+                                continue
+                                
+                        return {"success": False, "error": err_msg}
+                    except Exception as parse_err:
                         return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
                         
             except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout) as e:
@@ -301,8 +322,11 @@ class DeltaTrendBot:
         with open(config_path, "r") as f:
             self.config = json.load(f)
             
-        self.api_key = self.config["api_key"]
-        self.api_secret = self.config["api_secret"]
+        self.keys = self.config.get("keys", [{"api_key": self.config.get("api_key"), "api_secret": self.config.get("api_secret")}])
+        # Use first key for backward-compatibility checks
+        self.api_key = self.keys[0]["api_key"]
+        self.api_secret = self.keys[0]["api_secret"]
+        
         self.is_testnet = self.config["is_testnet"]
         self.use_india_delta = self.config["use_india_delta"]
         self.symbol = self.config["symbol"]
@@ -316,11 +340,10 @@ class DeltaTrendBot:
         self.channel_period = self.config.get("channel_period", 20)
         self.resolution = self.config.get("resolution", "15m")
         
-        self.is_mock_mode = (self.api_key == "YOUR_DELTA_API_KEY" or self.api_secret == "YOUR_DELTA_API_SECRET")
+        self.is_mock_mode = (self.api_key == "YOUR_DELTA_API_KEY" or self.api_key is None or self.api_secret == "YOUR_DELTA_API_SECRET")
         
         self.api = DeltaExchangeAPI(
-            self.api_key, 
-            self.api_secret, 
+            self.keys, 
             is_testnet=self.is_testnet, 
             use_india_delta=self.use_india_delta
         )
