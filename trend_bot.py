@@ -164,7 +164,20 @@ class DeltaExchangeAPI:
                 if response.status_code in [200, 201, 204]:
                     if not response.text.strip():
                         return {"success": True}
-                    return response.json()
+                    res_json = response.json()
+                    
+                    # Intercept API-level errors that return 200 OK but success=False
+                    if isinstance(res_json, dict) and not res_json.get("success"):
+                        err_str = str(res_json.get("error", ""))
+                        if "ip_not_whitelisted_for_api_key" in err_str:
+                            next_index = (self.active_key_index + 1) % len(self.keys)
+                            if next_index != self.active_key_index:
+                                log_warning(f"API 200 IP whitelist failure with API key index {self.active_key_index}. Rotating to key index {next_index}...")
+                                self.active_key_index = next_index
+                                # Force retry instantly
+                                continue
+                                
+                    return res_json
                 elif response.status_code >= 500:
                     raise requests.exceptions.HTTPError(f"Server Error {response.status_code}")
                 else:
