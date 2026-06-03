@@ -507,7 +507,7 @@ class DeltaReversionBot:
                         val = float(bal.get("available_balance", bal.get("balance", 0.0)))
                         if symbol == "INR":
                             capital += val
-                        elif symbol in ["USDT", "USDC"]:
+                        elif symbol in ["USD", "USDT", "USDC"]:
                             capital += val * usd_inr
                 if capital <= 0:
                     capital = self.static_capital_inr
