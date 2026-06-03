@@ -107,5 +107,38 @@ def home():
         "bots": status
     })
 
+@app.route("/stats")
+def stats():
+    try:
+        with open("reversion_config.json", "r") as f:
+            config = json.load(f)
+        k = config["keys"][0]
+        
+        base_url = "https://api.india.delta.exchange"
+        
+        def req(method, endpoint):
+            t_stamp = int(time.time())
+            message = method + str(t_stamp) + endpoint
+            sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+            headers = {
+                "api-key": k["api_key"],
+                "signature": sig,
+                "timestamp": str(t_stamp),
+                "Content-Type": "application/json"
+            }
+            res = requests.request(method, f"{base_url}{endpoint}", headers=headers, timeout=10)
+            return res.json()
+            
+        orders = req("GET", "/v2/orders/history?limit=50")
+        fills = req("GET", "/v2/fills?limit=50")
+        
+        return jsonify({
+            "success": True,
+            "orders": orders.get("result", orders) if isinstance(orders, dict) else orders,
+            "fills": fills.get("result", fills) if isinstance(fills, dict) else fills
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
