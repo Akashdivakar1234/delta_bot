@@ -363,6 +363,15 @@ def calculate_rsi(prices, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
+def calculate_ema(prices, period):
+    if len(prices) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
 
 # --- CORE REVERSION BOT CLASS ---
 class DeltaReversionBot:
@@ -387,6 +396,10 @@ class DeltaReversionBot:
         self.bb_period = self.config.get("bb_period", 20)
         self.bb_std = self.config.get("bb_std", 2.0)
         self.rsi_period = self.config.get("rsi_period", 14)
+        self.rsi_lower = self.config.get("rsi_lower", 30)
+        self.rsi_upper = self.config.get("rsi_upper", 70)
+        self.enable_trend_filter = self.config.get("enable_trend_filter", False)
+        self.trend_filter_period = self.config.get("trend_filter_period", 50)
         self.stop_loss_pct = self.config.get("stop_loss_pct", 1.5)
         self.resolution = self.config.get("resolution", "15m")
         
@@ -473,8 +486,15 @@ class DeltaReversionBot:
         log_info(f"BB/RSI Scan ({self.resolution}): Upper={upper_bb:.5f} | Lower={lower_bb:.5f} | Close={latest_close:.5f} | RSI={rsi:.2f}")
         
         # Check triggers
+        # Calculate EMA filter if enabled
+        ema_filter = calculate_ema(closes, self.trend_filter_period) if self.enable_trend_filter else None
+        
         # BULLISH Reversion (BUY)
-        if latest_close < lower_bb and rsi < 30:
+        if latest_close < lower_bb and rsi < self.rsi_lower:
+            if self.enable_trend_filter and ema_filter and latest_close < ema_filter:
+                log_info(f"Bullish mean reversion setup ignored: Price ({latest_close:.5f}) is below HTF filter EMA {self.trend_filter_period} ({ema_filter:.5f}) - Market is in a downtrend.")
+                return
+                
             entry_price = latest_close
             stop_loss = entry_price * (1 - (self.stop_loss_pct / 100.0))
             take_profit = sma_20
@@ -484,7 +504,11 @@ class DeltaReversionBot:
             self.execute_trade("BUY", entry_price, stop_loss, take_profit, usd_inr)
             
         # BEARISH Reversion (SELL)
-        elif latest_close > upper_bb and rsi > 70:
+        elif latest_close > upper_bb and rsi > self.rsi_upper:
+            if self.enable_trend_filter and ema_filter and latest_close > ema_filter:
+                log_info(f"Bearish mean reversion setup ignored: Price ({latest_close:.5f}) is above HTF filter EMA {self.trend_filter_period} ({ema_filter:.5f}) - Market is in an uptrend.")
+                return
+                
             entry_price = latest_close
             stop_loss = entry_price * (1 + (self.stop_loss_pct / 100.0))
             take_profit = sma_20
