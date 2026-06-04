@@ -400,6 +400,7 @@ class DeltaReversionBot:
         self.rsi_upper = self.config.get("rsi_upper", 70)
         self.enable_trend_filter = self.config.get("enable_trend_filter", False)
         self.trend_filter_period = self.config.get("trend_filter_period", 50)
+        self.htf_resolution = self.config.get("htf_resolution", "1h")
         self.stop_loss_pct = self.config.get("stop_loss_pct", 1.5)
         self.resolution = self.config.get("resolution", "15m")
         
@@ -486,13 +487,24 @@ class DeltaReversionBot:
         log_info(f"BB/RSI Scan ({self.resolution}): Upper={upper_bb:.5f} | Lower={lower_bb:.5f} | Close={latest_close:.5f} | RSI={rsi:.2f}")
         
         # Check triggers
-        # Calculate EMA filter if enabled
-        ema_filter = calculate_ema(closes, self.trend_filter_period) if self.enable_trend_filter else None
-        
+        # Calculate HTF trend filter if enabled
+        htf_trend = None
+        if self.enable_trend_filter:
+            htf_limit = self.trend_filter_period + 5
+            htf_candles = self.api.get_candles(self.symbol, self.htf_resolution, limit=htf_limit)
+            if len(htf_candles) >= self.trend_filter_period:
+                htf_completed = htf_candles[:-1]
+                htf_closes = [float(c['close']) for c in htf_completed]
+                htf_ema = calculate_ema(htf_closes, self.trend_filter_period)
+                if htf_ema:
+                    htf_close = htf_closes[-1]
+                    htf_trend = "BULLISH" if htf_close > htf_ema else "BEARISH"
+                    log_info(f"HTF Trend Filter ({self.htf_resolution}): Close={htf_close:.5f} | EMA {self.trend_filter_period}={htf_ema:.5f} | Trend={htf_trend}")
+
         # BULLISH Reversion (BUY)
         if latest_close < lower_bb and rsi < self.rsi_lower:
-            if self.enable_trend_filter and ema_filter and latest_close < ema_filter:
-                log_info(f"Bullish mean reversion setup ignored: Price ({latest_close:.5f}) is below HTF filter EMA {self.trend_filter_period} ({ema_filter:.5f}) - Market is in a downtrend.")
+            if self.enable_trend_filter and htf_trend == "BEARISH":
+                log_info(f"Bullish mean reversion setup ignored: HTF Trend on {self.htf_resolution} is BEARISH.")
                 return
                 
             entry_price = latest_close
@@ -505,8 +517,8 @@ class DeltaReversionBot:
             
         # BEARISH Reversion (SELL)
         elif latest_close > upper_bb and rsi > self.rsi_upper:
-            if self.enable_trend_filter and ema_filter and latest_close > ema_filter:
-                log_info(f"Bearish mean reversion setup ignored: Price ({latest_close:.5f}) is above HTF filter EMA {self.trend_filter_period} ({ema_filter:.5f}) - Market is in an uptrend.")
+            if self.enable_trend_filter and htf_trend == "BULLISH":
+                log_info(f"Bearish mean reversion setup ignored: HTF Trend on {self.htf_resolution} is BULLISH.")
                 return
                 
             entry_price = latest_close

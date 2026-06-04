@@ -25,6 +25,7 @@
   "rsi_upper": 75,
   "enable_trend_filter": true,
   "trend_filter_period": 50,
+  "htf_resolution": "1h",
   "stop_loss_pct": 1.5,
   "resolution": "15m"
 }
