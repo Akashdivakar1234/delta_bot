@@ -84,11 +84,22 @@ def run_reversion_bot():
 
 # Only start the threads in the master Gunicorn worker or if not running inside gunicorn master
 if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-    write_status(trend_status="starting", reversion_status="starting")
-    t1 = threading.Thread(target=run_trend_bot, daemon=True)
-    t2 = threading.Thread(target=run_reversion_bot, daemon=True)
-    t1.start()
-    t2.start()
+    mode = os.environ.get("STRATEGY_MODE", "BOTH").upper()
+    
+    if mode == "REVERSION_ONLY":
+        write_status(trend_status="disabled", reversion_status="starting")
+        t2 = threading.Thread(target=run_reversion_bot, daemon=True)
+        t2.start()
+    elif mode == "TREND_ONLY":
+        write_status(trend_status="starting", reversion_status="disabled")
+        t1 = threading.Thread(target=run_trend_bot, daemon=True)
+        t1.start()
+    else:
+        write_status(trend_status="starting", reversion_status="starting")
+        t1 = threading.Thread(target=run_trend_bot, daemon=True)
+        t2 = threading.Thread(target=run_reversion_bot, daemon=True)
+        t1.start()
+        t2.start()
 
 @app.route("/")
 def home():
@@ -113,11 +124,15 @@ def home():
 @app.route("/stats")
 def stats():
     try:
+        from flask import request
         with open("reversion_config.json", "r") as f:
             config = json.load(f)
         k = config["keys"][0]
         
         base_url = "https://api.india.delta.exchange"
+        
+        limit = request.args.get("limit", "100")
+        symbol = request.args.get("symbol", "")
         
         def req(method, endpoint):
             t_stamp = int(time.time())
@@ -132,14 +147,49 @@ def stats():
             res = requests.request(method, f"{base_url}{endpoint}", headers=headers, timeout=10)
             return res.json()
             
-        orders = req("GET", "/v2/orders/history?limit=50")
-        fills = req("GET", "/v2/fills?limit=50")
+        orders_path = f"/v2/orders/history?limit={limit}"
+        fills_path = f"/v2/fills?limit={limit}"
+        if symbol:
+            orders_path += f"&product_symbol={symbol}"
+            fills_path += f"&product_symbol={symbol}"
+            
+        orders = req("GET", orders_path)
+        fills = req("GET", fills_path)
         
         return jsonify({
             "success": True,
             "orders": orders.get("result", orders) if isinstance(orders, dict) else orders,
             "fills": fills.get("result", fills) if isinstance(fills, dict) else fills
         })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route("/api")
+def api_proxy():
+    try:
+        from flask import request
+        endpoint = request.args.get("endpoint", "")
+        method = request.args.get("method", "GET").upper()
+        if not endpoint:
+            return jsonify({"success": False, "error": "Endpoint is required"})
+            
+        with open("reversion_config.json", "r") as f:
+            config = json.load(f)
+        k = config["keys"][0]
+        
+        base_url = "https://api.india.delta.exchange"
+        
+        t_stamp = int(time.time())
+        message = method + str(t_stamp) + endpoint
+        sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+        headers = {
+            "api-key": k["api_key"],
+            "signature": sig,
+            "timestamp": str(t_stamp),
+            "Content-Type": "application/json"
+        }
+        res = requests.request(method, f"{base_url}{endpoint}", headers=headers, timeout=10)
+        return jsonify(res.json())
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
