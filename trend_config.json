@@ -21,7 +21,6 @@
   "poll_interval_seconds": 60,
   "channel_period": 25,
   "resolution": "1h",
-  "telegram_enabled": false,
-  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
-  "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  "discord_enabled": false,
+  "discord_webhook_url": "YOUR_DISCORD_WEBHOOK_URL"
 }

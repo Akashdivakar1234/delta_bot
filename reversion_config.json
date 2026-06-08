@@ -28,7 +28,6 @@
   "htf_resolution": "1h",
   "stop_loss_pct": 1.5,
   "resolution": "15m",
-  "telegram_enabled": false,
-  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
-  "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  "discord_enabled": false,
+  "discord_webhook_url": "YOUR_DISCORD_WEBHOOK_URL"
 }

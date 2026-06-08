@@ -364,26 +364,22 @@ class DeltaTrendBot:
         self.product_info = {}
         self.last_processed_candle_time = 0
         
-    def send_telegram_message(self, message):
-        enabled = self.config.get("telegram_enabled", False)
-        token = self.config.get("telegram_token", "")
-        chat_id = self.config.get("telegram_chat_id", "")
+    def send_discord_message(self, message):
+        enabled = self.config.get("discord_enabled", False)
+        webhook_url = self.config.get("discord_webhook_url", "")
         
-        if not (enabled and token and chat_id):
+        if not (enabled and webhook_url):
             return
             
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
+            "content": message
         }
         try:
-            res = requests.post(url, json=payload, timeout=10)
-            if not res.json().get("ok"):
-                log_error(f"Telegram API error: {res.text}")
+            res = requests.post(webhook_url, json=payload, timeout=10)
+            if res.status_code not in [200, 204]:
+                log_error(f"Discord Webhook error: {res.status_code} - {res.text}")
         except Exception as e:
-            log_error(f"Failed to send Telegram alert: {e}")
+            log_error(f"Failed to send Discord alert: {e}")
         
     def setup_account(self):
         if self.is_mock_mode:
@@ -536,8 +532,8 @@ class DeltaTrendBot:
             log_success(f"[MOCK] Placed Trend Bracket Order:")
             log_success(f"[MOCK] Symbol: {self.symbol} | Side: {side} | Size: {final_size} contracts")
             log_success(f"[MOCK] Limit Entry: {entry_rounded:.5f} | Stop Loss: {sl_rounded:.5f} | Take Profit: {tp_rounded:.5f}")
-            self.send_telegram_message(
-                f"🔔 *[MOCK] XRP Trend Breakout Trade Entered*\n"
+            self.send_discord_message(
+                f"🔔 **[MOCK] XRP Trend Breakout Trade Entered**\n"
                 f"Side: `{side.upper()}`\n"
                 f"Contracts: `{final_size}`\n"
                 f"Entry Price: `${entry_rounded:.5f}`\n"
@@ -557,8 +553,8 @@ class DeltaTrendBot:
             )
             if res.get("success"):
                 log_success(f"Order successfully filled on Exchange: {res}")
-                self.send_telegram_message(
-                    f"🔔 *XRP Trend Breakout Trade Entered*\n"
+                self.send_discord_message(
+                    f"🔔 **XRP Trend Breakout Trade Entered**\n"
                     f"Side: `{side.upper()}`\n"
                     f"Contracts: `{final_size}`\n"
                     f"Entry Price: `${entry_rounded:.5f}`\n"
@@ -582,7 +578,7 @@ class DeltaTrendBot:
                     log_info(f"Bracket order or position already exists for {self.symbol}. Skipping trade.")
                 else:
                     log_error(f"Exchange rejected order: {res}")
-                    self.send_telegram_message(f"⚠️ *XRP Trend Bot order failed:* Exchange rejected the order: `{err_msg}`")
+                    self.send_discord_message(f"⚠️ **XRP Trend Bot order failed:** Exchange rejected the order: `{err_msg}`")
                     # Log error to dashboard
                     try:
                         import json, os
@@ -601,14 +597,14 @@ class DeltaTrendBot:
             return
             
         log_success("Trend Bot is active and running.")
-        self.send_telegram_message(f"🚀 *XRP Trend Bot is active and scanning on Render!* (Resolution: `{self.resolution}`)")
+        self.send_discord_message(f"🚀 **XRP Trend Bot is active and scanning on Render!** (Resolution: `{self.resolution}`)")
         
         while True:
             try:
                 self.scan_market()
             except Exception as e:
                 log_error(f"Error in scan loop: {e}")
-                self.send_telegram_message(f"❌ *XRP Trend Bot Loop Error:* `{str(e)}`")
+                self.send_discord_message(f"❌ **XRP Trend Bot Loop Error:** `{str(e)}`")
             time.sleep(self.poll_interval)
 
 
