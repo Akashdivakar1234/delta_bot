@@ -193,5 +193,184 @@ def api_proxy():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
+@app.route("/pnl")
+def pnl_tracker():
+    try:
+        from flask import request
+        from datetime import datetime, timezone, timedelta
+        from collections import defaultdict
+
+        with open("reversion_config.json", "r") as f:
+            config = json.load(f)
+        k = config["keys"][0]
+        base_url = "https://api.india.delta.exchange"
+        ist = timezone(timedelta(hours=5, minutes=30))
+
+        # Paginate fills to get as many as possible
+        all_fills = []
+        page_size = 100
+        after = None
+        for _ in range(10):  # max 10 pages = 1000 fills
+            path = f"/v2/fills?limit={page_size}"
+            if after:
+                path += f"&after={after}"
+            t_stamp = int(time.time())
+            message = "GET" + str(t_stamp) + path
+            sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+            headers = {
+                "api-key": k["api_key"],
+                "signature": sig,
+                "timestamp": str(t_stamp),
+                "Content-Type": "application/json"
+            }
+            res = requests.get(f"{base_url}{path}", headers=headers, timeout=10)
+            data = res.json()
+            if not isinstance(data, dict) or not data.get("success"):
+                break
+            fills = data.get("result", [])
+            if not fills:
+                break
+            all_fills.extend(fills)
+            if len(fills) < page_size:
+                break
+            after = fills[-1].get("id")
+
+        # Parse each fill
+        trades = []
+        for f in all_fills:
+            created_at = f.get("created_at", "")
+            try:
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone(ist)
+            except:
+                continue
+
+            symbol = f.get("product_symbol", "UNKNOWN")
+            side = f.get("side", "").lower()
+            size = float(f.get("size", 0))
+            price = float(f.get("price", 0))
+            commission = float(f.get("commission", 0))
+            notional = float(f.get("notional", 0))
+
+            # Extract realized PnL from metadata (only present on closing fills)
+            meta = f.get("meta_data", {})
+            new_pos = meta.get("new_position", {})
+            realized_pnl = float(new_pos.get("realized_pnl", 0))
+
+            trades.append({
+                "datetime": dt,
+                "date": dt.strftime("%Y-%m-%d"),
+                "time": dt.strftime("%H:%M:%S"),
+                "symbol": symbol,
+                "side": side,
+                "size": size,
+                "price": price,
+                "commission": commission,
+                "notional": notional,
+                "realized_pnl": realized_pnl,
+                "is_closing": realized_pnl != 0
+            })
+
+        # Sort by datetime ascending
+        trades.sort(key=lambda x: x["datetime"])
+
+        # Group by day
+        daily = defaultdict(lambda: {
+            "trades": [],
+            "total_pnl_usd": 0.0,
+            "total_commission_usd": 0.0,
+            "wins": 0,
+            "losses": 0,
+            "by_symbol": defaultdict(lambda: {"pnl_usd": 0.0, "trades": 0, "wins": 0, "losses": 0})
+        })
+
+        for t in trades:
+            day = t["date"]
+            daily[day]["trades"].append({
+                "time": t["time"],
+                "symbol": t["symbol"],
+                "side": t["side"],
+                "size": t["size"],
+                "price": t["price"],
+                "commission": t["commission"],
+                "realized_pnl": t["realized_pnl"]
+            })
+            daily[day]["total_commission_usd"] += t["commission"]
+
+            if t["is_closing"]:
+                daily[day]["total_pnl_usd"] += t["realized_pnl"]
+                sym = t["symbol"]
+                daily[day]["by_symbol"][sym]["pnl_usd"] += t["realized_pnl"]
+                daily[day]["by_symbol"][sym]["trades"] += 1
+                if t["realized_pnl"] > 0:
+                    daily[day]["wins"] += 1
+                    daily[day]["by_symbol"][sym]["wins"] += 1
+                elif t["realized_pnl"] < 0:
+                    daily[day]["losses"] += 1
+                    daily[day]["by_symbol"][sym]["losses"] += 1
+
+        # Build cumulative equity curve
+        usd_inr = 85.0
+        initial_capital_inr = 350.0
+        cumulative_usd = 0.0
+        daily_report = []
+
+        for day in sorted(daily.keys()):
+            d = daily[day]
+            cumulative_usd += d["total_pnl_usd"]
+            net_pnl_inr = d["total_pnl_usd"] * usd_inr
+            cumulative_inr = cumulative_usd * usd_inr
+            equity_inr = initial_capital_inr + cumulative_inr
+
+            sym_breakdown = {}
+            for sym, s in d["by_symbol"].items():
+                sym_breakdown[sym] = {
+                    "pnl_usd": round(s["pnl_usd"], 6),
+                    "pnl_inr": round(s["pnl_usd"] * usd_inr, 2),
+                    "closed_trades": s["trades"],
+                    "wins": s["wins"],
+                    "losses": s["losses"]
+                }
+
+            daily_report.append({
+                "date": day,
+                "net_pnl_usd": round(d["total_pnl_usd"], 6),
+                "net_pnl_inr": round(net_pnl_inr, 2),
+                "total_commission_usd": round(d["total_commission_usd"], 6),
+                "wins": d["wins"],
+                "losses": d["losses"],
+                "cumulative_pnl_usd": round(cumulative_usd, 6),
+                "cumulative_pnl_inr": round(cumulative_inr, 2),
+                "equity_inr": round(equity_inr, 2),
+                "by_symbol": sym_breakdown,
+                "trade_count": len(d["trades"])
+            })
+
+        # Summary
+        total_wins = sum(d["wins"] for d in daily_report)
+        total_losses = sum(d["losses"] for d in daily_report)
+        win_rate = round((total_wins / (total_wins + total_losses) * 100), 1) if (total_wins + total_losses) > 0 else 0
+
+        summary = {
+            "initial_capital_inr": initial_capital_inr,
+            "current_equity_inr": round(initial_capital_inr + cumulative_usd * usd_inr, 2),
+            "total_pnl_usd": round(cumulative_usd, 6),
+            "total_pnl_inr": round(cumulative_usd * usd_inr, 2),
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "win_rate_pct": win_rate,
+            "total_fills": len(all_fills),
+            "tracking_since": sorted(daily.keys())[0] if daily else "N/A",
+            "last_updated": datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+        }
+
+        return jsonify({
+            "success": True,
+            "summary": summary,
+            "daily": daily_report
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()})
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
