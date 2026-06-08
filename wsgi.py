@@ -127,39 +127,66 @@ def stats():
         from flask import request
         with open("reversion_config.json", "r") as f:
             config = json.load(f)
-        k = config["keys"][0]
         
         base_url = "https://api.india.delta.exchange"
         
         limit = request.args.get("limit", "100")
         symbol = request.args.get("symbol", "")
         
-        def req(method, endpoint):
-            t_stamp = int(time.time())
-            message = method + str(t_stamp) + endpoint
-            sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
-            headers = {
-                "api-key": k["api_key"],
-                "signature": sig,
-                "timestamp": str(t_stamp),
-                "Content-Type": "application/json"
-            }
-            res = requests.request(method, f"{base_url}{endpoint}", headers=headers, timeout=10)
-            return res.json()
-            
-        orders_path = f"/v2/orders/history?limit={limit}"
-        fills_path = f"/v2/fills?limit={limit}"
-        if symbol:
-            orders_path += f"&product_symbol={symbol}"
-            fills_path += f"&product_symbol={symbol}"
-            
-        orders = req("GET", orders_path)
-        fills = req("GET", fills_path)
+        all_fills = []
+        all_orders = []
+        seen_fill_ids = set()
+        seen_order_ids = set()
         
+        for k in config.get("keys", []):
+            def req(method, endpoint):
+                t_stamp = int(time.time())
+                message = method + str(t_stamp) + endpoint
+                sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+                headers = {
+                    "api-key": k["api_key"],
+                    "signature": sig,
+                    "timestamp": str(t_stamp),
+                    "Content-Type": "application/json"
+                }
+                res = requests.request(method, f"{base_url}{endpoint}", headers=headers, timeout=10)
+                return res.json()
+                
+            orders_path = f"/v2/orders/history?limit={limit}"
+            fills_path = f"/v2/fills?limit={limit}"
+            if symbol:
+                orders_path += f"&product_symbol={symbol}"
+                fills_path += f"&product_symbol={symbol}"
+                
+            orders = req("GET", orders_path)
+            fills = req("GET", fills_path)
+            
+            if isinstance(orders, dict) and orders.get("success"):
+                for o in orders.get("result", []):
+                    if o.get("id") not in seen_order_ids:
+                        seen_order_ids.add(o.get("id"))
+                        all_orders.append(o)
+            elif isinstance(orders, list):
+                for o in orders:
+                    if o.get("id") not in seen_order_ids:
+                        seen_order_ids.add(o.get("id"))
+                        all_orders.append(o)
+                        
+            if isinstance(fills, dict) and fills.get("success"):
+                for f in fills.get("result", []):
+                    if f.get("id") not in seen_fill_ids:
+                        seen_fill_ids.add(f.get("id"))
+                        all_fills.append(f)
+            elif isinstance(fills, list):
+                for f in fills:
+                    if f.get("id") not in seen_fill_ids:
+                        seen_fill_ids.add(f.get("id"))
+                        all_fills.append(f)
+                        
         return jsonify({
             "success": True,
-            "orders": orders.get("result", orders) if isinstance(orders, dict) else orders,
-            "fills": fills.get("result", fills) if isinstance(fills, dict) else fills
+            "orders": all_orders,
+            "fills": all_fills
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
@@ -202,38 +229,43 @@ def pnl_tracker():
 
         with open("reversion_config.json", "r") as f:
             config = json.load(f)
-        k = config["keys"][0]
         base_url = "https://api.india.delta.exchange"
         ist = timezone(timedelta(hours=5, minutes=30))
 
-        # Paginate fills to get as many as possible
+        # Paginate fills to get as many as possible from all keys
         all_fills = []
-        page_size = 100
-        after = None
-        for _ in range(10):  # max 10 pages = 1000 fills
-            path = f"/v2/fills?limit={page_size}"
-            if after:
-                path += f"&after={after}"
-            t_stamp = int(time.time())
-            message = "GET" + str(t_stamp) + path
-            sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
-            headers = {
-                "api-key": k["api_key"],
-                "signature": sig,
-                "timestamp": str(t_stamp),
-                "Content-Type": "application/json"
-            }
-            res = requests.get(f"{base_url}{path}", headers=headers, timeout=10)
-            data = res.json()
-            if not isinstance(data, dict) or not data.get("success"):
-                break
-            fills = data.get("result", [])
-            if not fills:
-                break
-            all_fills.extend(fills)
-            if len(fills) < page_size:
-                break
-            after = fills[-1].get("id")
+        seen_fill_ids = set()
+        
+        for k in config.get("keys", []):
+            page_size = 100
+            after = None
+            for _ in range(10):  # max 10 pages = 1000 fills per key
+                path = f"/v2/fills?limit={page_size}"
+                if after:
+                    path += f"&after={after}"
+                t_stamp = int(time.time())
+                message = "GET" + str(t_stamp) + path
+                sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+                headers = {
+                    "api-key": k["api_key"],
+                    "signature": sig,
+                    "timestamp": str(t_stamp),
+                    "Content-Type": "application/json"
+                }
+                res = requests.get(f"{base_url}{path}", headers=headers, timeout=10)
+                data = res.json()
+                if not isinstance(data, dict) or not data.get("success"):
+                    break
+                fills = data.get("result", [])
+                if not fills:
+                    break
+                for f in fills:
+                    if f.get("id") not in seen_fill_ids:
+                        seen_fill_ids.add(f.get("id"))
+                        all_fills.append(f)
+                if len(fills) < page_size:
+                    break
+                after = fills[-1].get("id")
 
         # Parse each fill
         trades = []
