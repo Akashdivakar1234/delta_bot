@@ -251,7 +251,6 @@ def pnl_tracker():
             commission = float(f.get("commission", 0))
             notional = float(f.get("notional", 0))
 
-            # Extract realized PnL from metadata (only present on closing fills)
             meta = f.get("meta_data", {})
             new_pos = meta.get("new_position", {})
             realized_pnl = float(new_pos.get("realized_pnl", 0))
@@ -259,6 +258,7 @@ def pnl_tracker():
             trades.append({
                 "datetime": dt,
                 "date": dt.strftime("%Y-%m-%d"),
+                "month": dt.strftime("%Y-%m"),
                 "time": dt.strftime("%H:%M:%S"),
                 "symbol": symbol,
                 "side": side,
@@ -273,20 +273,28 @@ def pnl_tracker():
         # Sort by datetime ascending
         trades.sort(key=lambda x: x["datetime"])
 
-        # Group by day
-        daily = defaultdict(lambda: {
-            "trades": [],
-            "total_pnl_usd": 0.0,
-            "total_commission_usd": 0.0,
-            "wins": 0,
-            "losses": 0,
-            "by_symbol": defaultdict(lambda: {"pnl_usd": 0.0, "trades": 0, "wins": 0, "losses": 0})
-        })
+        usd_inr = 85.0
+        initial_capital_inr = 350.0
 
-        for t in trades:
-            day = t["date"]
-            daily[day]["trades"].append({
-                "time": t["time"],
+        # ---- Helper to build aggregation buckets ----
+        def make_bucket():
+            return {
+                "trades": [],
+                "total_pnl_usd": 0.0,
+                "total_commission_usd": 0.0,
+                "wins": 0,
+                "losses": 0,
+                "by_symbol": defaultdict(lambda: {
+                    "pnl_usd": 0.0, "commission_usd": 0.0,
+                    "trades": 0, "wins": 0, "losses": 0,
+                    "biggest_win_usd": 0.0, "biggest_loss_usd": 0.0
+                })
+            }
+
+        def add_trade_to_bucket(bucket, t):
+            bucket["trades"].append({
+                "time": t.get("time", ""),
+                "date": t.get("date", ""),
                 "symbol": t["symbol"],
                 "side": t["side"],
                 "size": t["size"],
@@ -294,67 +302,150 @@ def pnl_tracker():
                 "commission": t["commission"],
                 "realized_pnl": t["realized_pnl"]
             })
-            daily[day]["total_commission_usd"] += t["commission"]
+            bucket["total_commission_usd"] += t["commission"]
+            sym = t["symbol"]
+            bucket["by_symbol"][sym]["commission_usd"] += t["commission"]
 
             if t["is_closing"]:
-                daily[day]["total_pnl_usd"] += t["realized_pnl"]
-                sym = t["symbol"]
-                daily[day]["by_symbol"][sym]["pnl_usd"] += t["realized_pnl"]
-                daily[day]["by_symbol"][sym]["trades"] += 1
+                bucket["total_pnl_usd"] += t["realized_pnl"]
+                bucket["by_symbol"][sym]["pnl_usd"] += t["realized_pnl"]
+                bucket["by_symbol"][sym]["trades"] += 1
                 if t["realized_pnl"] > 0:
-                    daily[day]["wins"] += 1
-                    daily[day]["by_symbol"][sym]["wins"] += 1
+                    bucket["wins"] += 1
+                    bucket["by_symbol"][sym]["wins"] += 1
+                    if t["realized_pnl"] > bucket["by_symbol"][sym]["biggest_win_usd"]:
+                        bucket["by_symbol"][sym]["biggest_win_usd"] = t["realized_pnl"]
                 elif t["realized_pnl"] < 0:
-                    daily[day]["losses"] += 1
-                    daily[day]["by_symbol"][sym]["losses"] += 1
+                    bucket["losses"] += 1
+                    bucket["by_symbol"][sym]["losses"] += 1
+                    if t["realized_pnl"] < bucket["by_symbol"][sym]["biggest_loss_usd"]:
+                        bucket["by_symbol"][sym]["biggest_loss_usd"] = t["realized_pnl"]
 
-        # Build cumulative equity curve
-        usd_inr = 85.0
-        initial_capital_inr = 350.0
+        def format_sym_breakdown(by_symbol):
+            result = {}
+            for sym, s in by_symbol.items():
+                wr = round((s["wins"] / s["trades"] * 100), 1) if s["trades"] > 0 else 0
+                avg_win = round(s["pnl_usd"] / s["wins"], 6) if s["wins"] > 0 else 0
+                avg_loss = round((s["pnl_usd"] - (avg_win * s["wins"])) / s["losses"], 6) if s["losses"] > 0 else 0
+                strategy_name = "Trend Following" if sym == "XRPUSD" else "Mean Reversion" if sym == "ADAUSD" else "Unknown"
+                result[sym] = {
+                    "strategy": strategy_name,
+                    "pnl_usd": round(s["pnl_usd"], 6),
+                    "pnl_inr": round(s["pnl_usd"] * usd_inr, 2),
+                    "commission_usd": round(s["commission_usd"], 6),
+                    "closed_trades": s["trades"],
+                    "wins": s["wins"],
+                    "losses": s["losses"],
+                    "win_rate_pct": wr,
+                    "biggest_win_usd": round(s["biggest_win_usd"], 6),
+                    "biggest_win_inr": round(s["biggest_win_usd"] * usd_inr, 2),
+                    "biggest_loss_usd": round(s["biggest_loss_usd"], 6),
+                    "biggest_loss_inr": round(s["biggest_loss_usd"] * usd_inr, 2)
+                }
+            return result
+
+        # ---- DAILY aggregation ----
+        daily = defaultdict(make_bucket)
+        for t in trades:
+            add_trade_to_bucket(daily[t["date"]], t)
+
         cumulative_usd = 0.0
         daily_report = []
-
         for day in sorted(daily.keys()):
             d = daily[day]
             cumulative_usd += d["total_pnl_usd"]
-            net_pnl_inr = d["total_pnl_usd"] * usd_inr
-            cumulative_inr = cumulative_usd * usd_inr
-            equity_inr = initial_capital_inr + cumulative_inr
-
-            sym_breakdown = {}
-            for sym, s in d["by_symbol"].items():
-                sym_breakdown[sym] = {
-                    "pnl_usd": round(s["pnl_usd"], 6),
-                    "pnl_inr": round(s["pnl_usd"] * usd_inr, 2),
-                    "closed_trades": s["trades"],
-                    "wins": s["wins"],
-                    "losses": s["losses"]
-                }
-
             daily_report.append({
                 "date": day,
                 "net_pnl_usd": round(d["total_pnl_usd"], 6),
-                "net_pnl_inr": round(net_pnl_inr, 2),
+                "net_pnl_inr": round(d["total_pnl_usd"] * usd_inr, 2),
                 "total_commission_usd": round(d["total_commission_usd"], 6),
                 "wins": d["wins"],
                 "losses": d["losses"],
                 "cumulative_pnl_usd": round(cumulative_usd, 6),
-                "cumulative_pnl_inr": round(cumulative_inr, 2),
-                "equity_inr": round(equity_inr, 2),
-                "by_symbol": sym_breakdown,
+                "cumulative_pnl_inr": round(cumulative_usd * usd_inr, 2),
+                "equity_inr": round(initial_capital_inr + cumulative_usd * usd_inr, 2),
+                "by_symbol": format_sym_breakdown(d["by_symbol"]),
                 "trade_count": len(d["trades"])
             })
 
-        # Summary
+        # ---- MONTHLY aggregation ----
+        monthly = defaultdict(make_bucket)
+        for t in trades:
+            add_trade_to_bucket(monthly[t["month"]], t)
+
+        cumulative_usd_m = 0.0
+        monthly_report = []
+        for month in sorted(monthly.keys()):
+            m = monthly[month]
+            cumulative_usd_m += m["total_pnl_usd"]
+            wr = round((m["wins"] / (m["wins"] + m["losses"]) * 100), 1) if (m["wins"] + m["losses"]) > 0 else 0
+            monthly_report.append({
+                "month": month,
+                "net_pnl_usd": round(m["total_pnl_usd"], 6),
+                "net_pnl_inr": round(m["total_pnl_usd"] * usd_inr, 2),
+                "total_commission_usd": round(m["total_commission_usd"], 6),
+                "wins": m["wins"],
+                "losses": m["losses"],
+                "win_rate_pct": wr,
+                "cumulative_pnl_usd": round(cumulative_usd_m, 6),
+                "cumulative_pnl_inr": round(cumulative_usd_m * usd_inr, 2),
+                "equity_inr": round(initial_capital_inr + cumulative_usd_m * usd_inr, 2),
+                "by_symbol": format_sym_breakdown(m["by_symbol"]),
+                "trade_count": len(m["trades"])
+            })
+
+        # ---- PER-STRATEGY lifetime performance ----
+        strategy_all = defaultdict(make_bucket)
+        for t in trades:
+            add_trade_to_bucket(strategy_all[t["symbol"]], t)
+
+        strategy_report = {}
+        for sym, s in strategy_all.items():
+            total_closed = s["wins"] + s["losses"]
+            wr = round((s["wins"] / total_closed * 100), 1) if total_closed > 0 else 0
+            sym_data = s["by_symbol"][sym]
+            avg_win = round(sym_data["pnl_usd"] / sym_data["wins"], 6) if sym_data["wins"] > 0 else 0
+            total_loss_usd = sym_data["pnl_usd"] - (avg_win * sym_data["wins"])
+            avg_loss = round(total_loss_usd / sym_data["losses"], 6) if sym_data["losses"] > 0 else 0
+            rr_ratio = round(abs(avg_win / avg_loss), 2) if avg_loss != 0 else 0
+            expectancy = round(avg_win * (wr / 100) + avg_loss * (1 - wr / 100), 6)
+            strategy_name = "Trend Following" if sym == "XRPUSD" else "Mean Reversion" if sym == "ADAUSD" else "Unknown"
+
+            strategy_report[sym] = {
+                "strategy": strategy_name,
+                "total_pnl_usd": round(s["total_pnl_usd"], 6),
+                "total_pnl_inr": round(s["total_pnl_usd"] * usd_inr, 2),
+                "total_commission_usd": round(s["total_commission_usd"], 6),
+                "total_commission_inr": round(s["total_commission_usd"] * usd_inr, 2),
+                "closed_trades": total_closed,
+                "wins": s["wins"],
+                "losses": s["losses"],
+                "win_rate_pct": wr,
+                "avg_win_usd": avg_win,
+                "avg_win_inr": round(avg_win * usd_inr, 2),
+                "avg_loss_usd": avg_loss,
+                "avg_loss_inr": round(avg_loss * usd_inr, 2),
+                "reward_risk_ratio": rr_ratio,
+                "expectancy_per_trade_usd": expectancy,
+                "expectancy_per_trade_inr": round(expectancy * usd_inr, 2),
+                "biggest_win_usd": round(sym_data["biggest_win_usd"], 6),
+                "biggest_win_inr": round(sym_data["biggest_win_usd"] * usd_inr, 2),
+                "biggest_loss_usd": round(sym_data["biggest_loss_usd"], 6),
+                "biggest_loss_inr": round(sym_data["biggest_loss_usd"] * usd_inr, 2),
+                "total_fills": len(s["trades"])
+            }
+
+        # ---- Overall Summary ----
         total_wins = sum(d["wins"] for d in daily_report)
         total_losses = sum(d["losses"] for d in daily_report)
+        final_cumulative = cumulative_usd
         win_rate = round((total_wins / (total_wins + total_losses) * 100), 1) if (total_wins + total_losses) > 0 else 0
 
         summary = {
             "initial_capital_inr": initial_capital_inr,
-            "current_equity_inr": round(initial_capital_inr + cumulative_usd * usd_inr, 2),
-            "total_pnl_usd": round(cumulative_usd, 6),
-            "total_pnl_inr": round(cumulative_usd * usd_inr, 2),
+            "current_equity_inr": round(initial_capital_inr + final_cumulative * usd_inr, 2),
+            "total_pnl_usd": round(final_cumulative, 6),
+            "total_pnl_inr": round(final_cumulative * usd_inr, 2),
             "total_wins": total_wins,
             "total_losses": total_losses,
             "win_rate_pct": win_rate,
@@ -366,6 +457,8 @@ def pnl_tracker():
         return jsonify({
             "success": True,
             "summary": summary,
+            "strategies": strategy_report,
+            "monthly": monthly_report,
             "daily": daily_report
         })
     except Exception as e:
@@ -374,3 +467,4 @@ def pnl_tracker():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
