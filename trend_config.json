@@ -19,6 +19,6 @@
   "leverage": 5,
   "usd_inr_rate_fallback": 85.0,
   "poll_interval_seconds": 60,
-  "channel_period": 20,
+  "channel_period": 25,
   "resolution": "15m"
 }
