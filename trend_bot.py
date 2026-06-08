@@ -310,10 +310,6 @@ def get_usd_inr_rate():
     return 85.0
 
 def is_within_killzone():
-    # Trend follower trades 24/7 or does it follow weekday rules?
-    # Usually crypto is 24/7, but we can respect weekend filters or killzones.
-    # To ride massive trends, trend followers typically trade 24/7 without windows.
-    # We will allow 24/7 trading for the Trend follower to capture overnight trends.
     return True, "Trading Active 24/7"
 
 def round_step(value, step):
@@ -327,6 +323,108 @@ def floor_step(value, step):
     if step == 0:
         return value
     return math.floor((value + 1e-9) / step) * step
+
+def convert_to_heikin_ashi(candles):
+    ha_candles = []
+    for idx, c in enumerate(candles):
+        c_open = float(c['open'])
+        c_high = float(c['high'])
+        c_low = float(c['low'])
+        c_close = float(c['close'])
+        
+        if idx == 0:
+            ha_open = (c_open + c_close) / 2
+        else:
+            prev = ha_candles[-1]
+            ha_open = (prev['open'] + prev['close']) / 2
+            
+        ha_close = (c_open + c_high + c_low + c_close) / 4
+        ha_high = max(c_high, ha_open, ha_close)
+        ha_low = min(c_low, ha_open, ha_close)
+        
+        ha_candles.append({
+            'time': c['time'],
+            'open': ha_open,
+            'high': ha_high,
+            'low': ha_low,
+            'close': ha_close,
+            'volume': float(c['volume'])
+        })
+    return ha_candles
+
+def calculate_adx_wilders(ha_candles, period=14):
+    n = len(ha_candles)
+    if n < period * 2 + 5:
+        return None, False
+        
+    highs = [c['high'] for c in ha_candles]
+    lows = [c['low'] for c in ha_candles]
+    closes = [c['close'] for c in ha_candles]
+    
+    tr = [0.0] * n
+    plus_dm = [0.0] * n
+    minus_dm = [0.0] * n
+    
+    for i in range(1, n):
+        up = highs[i] - highs[i-1]
+        down = lows[i-1] - lows[i]
+        
+        plus_dm[i] = up if (up > down and up > 0) else 0.0
+        minus_dm[i] = down if (down > up and down > 0) else 0.0
+        
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i-1]),
+            abs(lows[i] - closes[i-1])
+        )
+        
+    smoothed_tr = [0.0] * n
+    smoothed_plus_dm = [0.0] * n
+    smoothed_minus_dm = [0.0] * n
+    
+    smoothed_tr[period] = sum(tr[1:period+1])
+    smoothed_plus_dm[period] = sum(plus_dm[1:period+1])
+    smoothed_minus_dm[period] = sum(minus_dm[1:period+1])
+    
+    for i in range(period + 1, n):
+        smoothed_tr[i] = smoothed_tr[i-1] - (smoothed_tr[i-1] / period) + tr[i]
+        smoothed_plus_dm[i] = smoothed_plus_dm[i-1] - (smoothed_plus_dm[i-1] / period) + plus_dm[i]
+        smoothed_minus_dm[i] = smoothed_minus_dm[i-1] - (smoothed_minus_dm[i-1] / period) + minus_dm[i]
+        
+    plus_di = [0.0] * n
+    minus_di = [0.0] * n
+    dx = [0.0] * n
+    
+    for i in range(period, n):
+        if smoothed_tr[i] > 0:
+            plus_di[i] = 100 * smoothed_plus_dm[i] / smoothed_tr[i]
+            minus_di[i] = 100 * smoothed_minus_dm[i] / smoothed_tr[i]
+        else:
+            plus_di[i] = 0.0
+            minus_di[i] = 0.0
+            
+        sum_di = plus_di[i] + minus_di[i]
+        diff_di = abs(plus_di[i] - minus_di[i])
+        dx[i] = 100 * diff_di / sum_di if sum_di > 0 else 0.0
+        
+    adx = [0.0] * n
+    adx[period * 2 - 1] = sum(dx[period:period * 2]) / period
+    for i in range(period * 2, n):
+        adx[i] = (adx[i-1] * (period - 1) + dx[i]) / period
+        
+    curr_adx = adx[-1]
+    prev_adx = adx[-2]
+    is_rising = curr_adx > prev_adx
+    return curr_adx, is_rising
+
+def calculate_ema(prices, period):
+    if len(prices) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
 
 
 # --- CORE TREND BOT CLASS ---
@@ -423,10 +521,10 @@ class DeltaTrendBot:
         if not usd_inr:
             usd_inr = self.usd_inr_fallback
         
-        # 2. Fetch candles
-        candles = self.api.get_candles(self.symbol, self.resolution, limit=self.channel_period + 5)
-        if len(candles) < self.channel_period + 2:
-            log_warning("Insufficient candles to compute Donchian Channels.")
+        # 2. Fetch candles (limit=100 for enough warm-up data for ADX Wilder's calculation)
+        candles = self.api.get_candles(self.symbol, self.resolution, limit=100)
+        if len(candles) < 60:
+            log_warning("Insufficient candles to compute indicators.")
             return
             
         completed_candles = candles[:-1]
@@ -437,40 +535,73 @@ class DeltaTrendBot:
             
         self.last_processed_candle_time = latest_completed_time
         
-        # Latest completed candle (index -1)
-        latest_completed = completed_candles[-1]
-        latest_close = float(latest_completed['close'])
+        # Latest completed standard close (used as the fill entry price)
+        latest_close = float(completed_candles[-1]['close'])
         
-        # Donchian channel is calculated over the preceding `channel_period` completed candles
-        channel_candles = completed_candles[-(self.channel_period + 1):-1]
+        # 3. Convert candles to Heikin-Ashi in the background for signals
+        ha_candles = convert_to_heikin_ashi(completed_candles)
         
-        highs = [float(c['high']) for c in channel_candles]
-        lows = [float(c['low']) for c in channel_candles]
+        # Donchian channel is calculated over the preceding `channel_period` completed Heikin-Ashi candles
+        channel_curr = ha_candles[-(self.channel_period + 1):-1]
+        curr_upper = max([c['high'] for c in channel_curr])
+        curr_lower = min([c['low'] for c in channel_curr])
+        mid_band = (curr_upper + curr_lower) / 2.0
         
-        upper_band = max(highs)
-        lower_band = min(lows)
-        mid_band = (upper_band + lower_band) / 2.0
+        # Preceding channel for crossover check
+        channel_prev = ha_candles[-(self.channel_period + 2):-2]
+        prev_upper = max([c['high'] for c in channel_prev])
+        prev_lower = min([c['low'] for c in channel_prev])
         
-        log_info(f"Donchian Channel ({self.resolution}): High={upper_band:.5f} | Low={lower_band:.5f} | Mid={mid_band:.5f} | Close={latest_close:.5f}")
+        # 4. Volatility Filter (ADX > 20 and rising)
+        adx_val, is_rising = calculate_adx_wilders(ha_candles, 14)
+        is_volatile = (adx_val is not None) and (adx_val > 20) and is_rising
         
-        # Check triggers
+        # 5. Volume Filter (Volume > 1.2x of 20-period average volume)
+        volumes = [float(c['volume']) for c in completed_candles[-20:]]
+        avg_volume = sum(volumes) / len(volumes)
+        latest_volume = float(completed_candles[-1]['volume'])
+        is_volume_confirmed = latest_volume > (avg_volume * 1.2)
+        
+        # 6. Macro Trend Filter (4-Hour EMA 50 on standard close)
+        candles_4h = self.api.get_candles(self.symbol, "4h", limit=100)
+        macro_bullish = True
+        if len(candles_4h) >= 55:
+            completed_4h = candles_4h[:-1]
+            closes_4h = [float(c['close']) for c in completed_4h]
+            ema_50_4h = calculate_ema(closes_4h, 50)
+            if ema_50_4h:
+                latest_close_4h = closes_4h[-1]
+                macro_bullish = latest_close_4h > ema_50_4h
+                log_info(f"4H EMA 50 Filter: Close={latest_close_4h:.5f} | EMA={ema_50_4h:.5f} | Bullish={macro_bullish}")
+        else:
+            log_warning("Insufficient 4H candles for trend filter. Defaulting to True.")
+            
+        curr_ha_close = ha_candles[-1]['close']
+        prev_ha_close = ha_candles[-2]['close']
+        
+        log_info(f"HA Scan ({self.resolution}): Upper={curr_upper:.5f} | Lower={curr_lower:.5f} | Mid={mid_band:.5f} | HA Close={curr_ha_close:.5f} | ADX={adx_val:.2f} (Rising: {is_rising}) | Vol Confirmed: {is_volume_confirmed}")
+        
+        # Check triggers (crossover/crossunder on Heikin-Ashi close)
+        buy_signal = prev_ha_close <= prev_upper and curr_ha_close > curr_upper and is_volatile and is_volume_confirmed and macro_bullish
+        sell_signal = prev_ha_close >= prev_lower and curr_ha_close < curr_lower and is_volatile and is_volume_confirmed and not macro_bullish
+        
         # BULLISH Breakout
-        if latest_close > upper_band:
+        if buy_signal:
             entry_price = latest_close
             stop_loss = mid_band
             take_profit = entry_price + (self.rr_ratio * (entry_price - stop_loss))
             
-            log_setup("DONCHIAN BULLISH BREAKOUT DETECTED!")
+            log_setup("HA DONCHIAN BULLISH BREAKOUT TRIGGERED!")
             log_info(f"Entry: {entry_price:.5f} | SL: {stop_loss:.5f} | TP: {take_profit:.5f}")
             self.execute_trade("BUY", entry_price, stop_loss, take_profit, usd_inr)
             
         # BEARISH Breakout
-        elif latest_close < lower_band:
+        elif sell_signal:
             entry_price = latest_close
             stop_loss = mid_band
             take_profit = entry_price - (self.rr_ratio * (stop_loss - entry_price))
             
-            log_setup("DONCHIAN BEARISH BREAKOUT DETECTED!")
+            log_setup("HA DONCHIAN BEARISH BREAKOUT TRIGGERED!")
             log_info(f"Entry: {entry_price:.5f} | SL: {stop_loss:.5f} | TP: {take_profit:.5f}")
             self.execute_trade("SELL", entry_price, stop_loss, take_profit, usd_inr)
 

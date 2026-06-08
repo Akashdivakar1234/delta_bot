@@ -15,7 +15,7 @@
   "capital_mode": "auto",
   "static_capital_inr": 350.0,
   "risk_percent": 2.0,
-  "target_rr_ratio": 3.0,
+  "target_rr_ratio": 5.0,
   "leverage": 5,
   "usd_inr_rate_fallback": 85.0,
   "poll_interval_seconds": 60,
