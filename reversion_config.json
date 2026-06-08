@@ -27,5 +27,8 @@
   "trend_filter_period": 50,
   "htf_resolution": "1h",
   "stop_loss_pct": 1.5,
-  "resolution": "15m"
+  "resolution": "15m",
+  "telegram_enabled": false,
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID"
 }

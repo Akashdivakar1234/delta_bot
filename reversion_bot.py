@@ -415,6 +415,27 @@ class DeltaReversionBot:
         self.product_info = {}
         self.last_processed_candle_time = 0
         
+    def send_telegram_message(self, message):
+        enabled = self.config.get("telegram_enabled", False)
+        token = self.config.get("telegram_token", "")
+        chat_id = self.config.get("telegram_chat_id", "")
+        
+        if not (enabled and token and chat_id):
+            return
+            
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            res = requests.post(url, json=payload, timeout=10)
+            if not res.json().get("ok"):
+                log_error(f"Telegram API error: {res.text}")
+        except Exception as e:
+            log_error(f"Failed to send Telegram alert: {e}")
+        
     def setup_account(self):
         if self.is_mock_mode:
             log_warning("Bot is running in MOCK mode. Order placement simulated.")
@@ -587,6 +608,14 @@ class DeltaReversionBot:
             log_success(f"[MOCK] Placed Reversion Bracket Order:")
             log_success(f"[MOCK] Symbol: {self.symbol} | Side: {side} | Size: {final_size} contracts")
             log_success(f"[MOCK] Limit Entry: {entry_rounded:.5f} | Stop Loss: {sl_rounded:.5f} | Take Profit: {tp_rounded:.5f}")
+            self.send_telegram_message(
+                f"🔔 *[MOCK] ADA Reversion Trade Entered*\n"
+                f"Side: `{side.upper()}`\n"
+                f"Contracts: `{final_size}`\n"
+                f"Entry Price: `${entry_rounded:.5f}`\n"
+                f"Stop Loss: `${sl_rounded:.5f}`\n"
+                f"Take Profit: `${tp_rounded:.5f}`"
+            )
         else:
             log_info("Submitting bracket order to Delta Exchange API...")
             product_id = self.product_info["id"]
@@ -600,6 +629,15 @@ class DeltaReversionBot:
             )
             if res.get("success"):
                 log_success(f"Order successfully filled on Exchange: {res}")
+                self.send_telegram_message(
+                    f"🔔 *ADA Reversion Trade Entered*\n"
+                    f"Side: `{side.upper()}`\n"
+                    f"Contracts: `{final_size}`\n"
+                    f"Entry Price: `${entry_rounded:.5f}`\n"
+                    f"Stop Loss: `${sl_rounded:.5f}`\n"
+                    f"Take Profit: `${tp_rounded:.5f}`\n"
+                    f"Risk: `₹{actual_risk_inr:.2f}`"
+                )
                 # Log success to dashboard
                 try:
                     import json, os
@@ -616,6 +654,7 @@ class DeltaReversionBot:
                     log_info(f"Bracket order or position already exists for {self.symbol}. Skipping trade.")
                 else:
                     log_error(f"Exchange rejected order: {res}")
+                    self.send_telegram_message(f"⚠️ *ADA Reversion Bot order failed:* Exchange rejected the order: `{err_msg}`")
                     # Log error to dashboard
                     try:
                         import json, os
@@ -634,12 +673,14 @@ class DeltaReversionBot:
             return
             
         log_success("Mean Reversion Bot is active and running.")
+        self.send_telegram_message(f"🚀 *ADA Reversion Bot is active and scanning on Render!* (Resolution: `{self.resolution}`)")
         
         while True:
             try:
                 self.scan_market()
             except Exception as e:
                 log_error(f"Error in scan loop: {e}")
+                self.send_telegram_message(f"❌ *ADA Reversion Bot Loop Error:* `{str(e)}`")
             time.sleep(self.poll_interval)
 
 
