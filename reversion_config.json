@@ -28,6 +28,6 @@
   "htf_resolution": "1h",
   "stop_loss_pct": 1.5,
   "resolution": "15m",
-  "discord_enabled": false,
-  "discord_webhook_url": "YOUR_DISCORD_WEBHOOK_URL"
+  "discord_enabled": true,
+  "discord_webhook_url": "https://discord.com/api/webhooks/1513520502352642149/NzPls4R8GEwD65LrCIwvlPIM3xch5BZITy5NRy84pgRNEZqFiNQwEAqtg48x1YPlZmJE"
 }
