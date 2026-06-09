@@ -552,9 +552,9 @@ class DeltaTrendBot:
         prev_upper = max([c['high'] for c in channel_prev])
         prev_lower = min([c['low'] for c in channel_prev])
         
-        # 4. Volatility Filter (ADX > 20)
+        # 4. Volatility Filter (ADX > 20) - Disabled per user request
         adx_val, is_rising = calculate_adx_wilders(ha_candles, 14)
-        is_volatile = (adx_val is not None) and (adx_val > 20)
+        is_volatile = True
         
         # 5. Volume Filter (Volume > 1.2x of 20-period average volume)
         volumes = [float(c['volume']) for c in completed_candles[-20:]]
