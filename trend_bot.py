@@ -461,6 +461,8 @@ class DeltaTrendBot:
         
         self.product_info = {}
         self.last_processed_candle_time = 0
+        self.state_file = "active_trade_trend.json"
+        self.load_trade_state()
         
     def send_discord_message(self, message):
         enabled = self.config.get("discord_enabled", False)
@@ -671,6 +673,13 @@ class DeltaTrendBot:
                 f"Stop Loss: `${sl_rounded:.5f}`\n"
                 f"Take Profit: `${tp_rounded:.5f}`"
             )
+            self.position_active = True
+            self.entry_price = entry_rounded
+            self.tp_price = tp_rounded
+            self.sl_price = sl_rounded
+            self.entry_side = side.upper()
+            self.entry_size = final_size
+            self.save_trade_state()
         else:
             log_info("Submitting bracket order to Delta Exchange API...")
             product_id = self.product_info["id"]
@@ -693,6 +702,13 @@ class DeltaTrendBot:
                     f"Take Profit: `${tp_rounded:.5f}`\n"
                     f"Risk: `₹{actual_risk_inr:.2f}`"
                 )
+                self.position_active = True
+                self.entry_price = entry_rounded
+                self.tp_price = tp_rounded
+                self.sl_price = sl_rounded
+                self.entry_side = side.upper()
+                self.entry_size = final_size
+                self.save_trade_state()
                 # Log success to dashboard
                 try:
                     import json, os
@@ -721,6 +737,191 @@ class DeltaTrendBot:
                             json.dump(status, f)
                     except: pass
 
+    def load_trade_state(self):
+        self.position_active = False
+        self.entry_price = None
+        self.tp_price = None
+        self.sl_price = None
+        self.entry_side = None
+        self.entry_size = None
+        
+        import os
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r") as f:
+                    data = json.load(f)
+                    self.position_active = data.get("position_active", False)
+                    self.entry_price = data.get("entry_price")
+                    self.tp_price = data.get("tp_price")
+                    self.sl_price = data.get("sl_price")
+                    self.entry_side = data.get("entry_side")
+                    self.entry_size = data.get("entry_size")
+                    log_info(f"Loaded active trade state: {data}")
+            except Exception as e:
+                log_error(f"Error loading trade state: {e}")
+
+    def save_trade_state(self):
+        try:
+            data = {
+                "position_active": self.position_active,
+                "entry_price": self.entry_price,
+                "tp_price": self.tp_price,
+                "sl_price": self.sl_price,
+                "entry_side": self.entry_side,
+                "entry_size": self.entry_size
+            }
+            with open(self.state_file, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            log_error(f"Error saving trade state: {e}")
+
+    def check_position_exits(self):
+        # 1. MOCK MODE EXIT CHECKING
+        if self.is_mock_mode:
+            if not self.position_active:
+                return
+            # Fetch latest price to check wicks/close against TP or SL
+            ticker = self.api.get_ticker(self.symbol)
+            if not ticker:
+                return
+            current_price = float(ticker.get("close", ticker.get("mark_price", 0)))
+            if current_price <= 0:
+                return
+                
+            pnl_usd = 0.0
+            triggered = False
+            exit_reason = ""
+            exit_price = 0.0
+            
+            if self.entry_side == "BUY":
+                if current_price >= self.tp_price:
+                    triggered = True
+                    exit_price = self.tp_price
+                    exit_reason = "Take Profit (TP) Hit"
+                    pnl_usd = (exit_price - self.entry_price) * self.entry_size
+                elif current_price <= self.sl_price:
+                    triggered = True
+                    exit_price = self.sl_price
+                    exit_reason = "Stop Loss (SL) Hit"
+                    pnl_usd = (exit_price - self.entry_price) * self.entry_size
+            elif self.entry_side == "SELL":
+                if current_price <= self.tp_price:
+                    triggered = True
+                    exit_price = self.tp_price
+                    exit_reason = "Take Profit (TP) Hit"
+                    pnl_usd = (self.entry_price - exit_price) * self.entry_size
+                elif current_price >= self.sl_price:
+                    triggered = True
+                    exit_price = self.sl_price
+                    exit_reason = "Stop Loss (SL) Hit"
+                    pnl_usd = (self.entry_price - exit_price) * self.entry_size
+                    
+            if triggered:
+                usd_inr = get_usd_inr_rate()
+                pnl_inr = pnl_usd * usd_inr
+                self.send_discord_message(
+                    f"🔔 **[MOCK] XRP Trend Trade Closed**\n"
+                    f"Exit Reason: `{exit_reason}`\n"
+                    f"Side: `{self.entry_side}`\n"
+                    f"Contracts: `{self.entry_size}`\n"
+                    f"Entry Price: `${self.entry_price:.5f}`\n"
+                    f"Exit Price: `${exit_price:.5f}`\n"
+                    f"Realized PnL: `${pnl_usd:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)"
+                )
+                self.position_active = False
+                self.entry_price = None
+                self.tp_price = None
+                self.sl_price = None
+                self.entry_side = None
+                self.entry_size = None
+                self.save_trade_state()
+            return
+
+        # 2. REAL MODE EXIT CHECKING
+        res = self.api.request("GET", "/v2/positions")
+        pos_match = None
+        if isinstance(res, dict) and res.get("success"):
+            positions = res.get("result", [])
+            for p in positions:
+                if p.get("product_symbol") == self.symbol:
+                    size = float(p.get("size", 0))
+                    if size != 0:
+                        pos_match = p
+                        break
+        elif isinstance(res, list):
+            for p in res:
+                if p.get("product_symbol") == self.symbol:
+                    size = float(p.get("size", 0))
+                    if size != 0:
+                        pos_match = p
+                        break
+
+        # Case A: Bot thought a trade was active, but position size is now 0 (or no position found)
+        if self.position_active and pos_match is None:
+            log_info(f"Position for {self.symbol} is closed. Fetching fills for exit summary...")
+            exit_price = None
+            realized_pnl = 0.0
+            
+            # Fetch latest fills to extract realized PnL and exit price
+            res_fills = self.api.request("GET", f"/v2/fills?product_symbol={self.symbol}&limit=5")
+            if (isinstance(res_fills, dict) and res_fills.get("success")) or isinstance(res_fills, list):
+                fills = res_fills.get("result", res_fills) if isinstance(res_fills, dict) else res_fills
+                fills.sort(key=lambda x: x.get("id", 0), reverse=True)
+                for f in fills:
+                    meta = f.get("meta_data", {})
+                    new_pos = meta.get("new_position", {})
+                    realized_pnl_val = float(new_pos.get("realized_pnl", 0))
+                    # Check if this is an exit fill (either has pnl, or opposite side)
+                    if realized_pnl_val != 0 or f.get("side", "").upper() != self.entry_side:
+                        exit_price = float(f.get("price", 0))
+                        realized_pnl = realized_pnl_val
+                        break
+            
+            if exit_price is None:
+                # Fallback to current ticker if fills couldn't be loaded
+                ticker = self.api.get_ticker(self.symbol)
+                exit_price = float(ticker.get("close", ticker.get("mark_price", 0))) if ticker else 0.0
+                
+            exit_reason = "Position Closed"
+            if self.tp_price is not None and abs(exit_price - self.tp_price) / self.tp_price < 0.005:
+                exit_reason = "Take Profit (TP) Hit"
+            elif self.sl_price is not None and abs(exit_price - self.sl_price) / self.sl_price < 0.005:
+                exit_reason = "Stop Loss (SL) Hit"
+                
+            usd_inr = get_usd_inr_rate()
+            pnl_inr = realized_pnl * usd_inr
+            
+            self.send_discord_message(
+                f"🔔 **XRP Trend Trade Closed**\n"
+                f"Exit Reason: `{exit_reason}`\n"
+                f"Side: `{self.entry_side}`\n"
+                f"Contracts: `{self.entry_size}`\n"
+                f"Entry Price: `${self.entry_price:.5f}`\n"
+                f"Exit Price: `${exit_price:.5f}`\n"
+                f"Realized PnL: `${realized_pnl:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)"
+            )
+            
+            self.position_active = False
+            self.entry_price = None
+            self.tp_price = None
+            self.sl_price = None
+            self.entry_side = None
+            self.entry_size = None
+            self.save_trade_state()
+            
+        # Case B: Bot thought no trade was active, but an open position is found (e.g. startup recovery or manual trade)
+        elif not self.position_active and pos_match is not None:
+            self.position_active = True
+            self.entry_price = float(pos_match.get("entry_price", 0))
+            size = float(pos_match.get("size", 0))
+            self.entry_side = "BUY" if size > 0 else "SELL"
+            self.entry_size = abs(size)
+            # TP and SL are unknown since we recovered state from live position
+            self.tp_price = None
+            self.sl_price = None
+            log_info(f"Synchronized active position from exchange: Side={self.entry_side}, Size={self.entry_size}, Entry=${self.entry_price:.5f}")
+            self.save_trade_state()
+
     def start(self):
         log_info("Starting Donchian Trend Following Bot...")
         if not self.setup_account():
@@ -732,6 +933,7 @@ class DeltaTrendBot:
         
         while True:
             try:
+                self.check_position_exits()
                 self.scan_market()
             except Exception as e:
                 log_error(f"Error in scan loop: {e}")
