@@ -11,7 +11,7 @@
   ],
   "is_testnet": false,
   "use_india_delta": true,
-  "symbols": ["BIOUSD", "ETHUSD", "SOLUSD"],
+  "symbols": ["BIOUSD", "ETHUSD", "SOLUSD", "XRPUSD"],
   "symbol": "BIOUSD",
   "symbol_settings": {
     "BIOUSD": {
@@ -29,6 +29,12 @@
     "SOLUSD": {
       "use_breakeven": false,
       "tp1_percent": 0.0,
+      "target_rr_ratio": 5.0,
+      "leverage": 5
+    },
+    "XRPUSD": {
+      "use_breakeven": true,
+      "tp1_percent": 25.0,
       "target_rr_ratio": 5.0,
       "leverage": 5
     }

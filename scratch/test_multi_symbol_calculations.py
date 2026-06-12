@@ -20,6 +20,7 @@ def run_test():
     assert "BIOUSD" in bot.symbols, "BIOUSD must be loaded"
     assert "ETHUSD" in bot.symbols, "ETHUSD must be loaded"
     assert "SOLUSD" in bot.symbols, "SOLUSD must be loaded"
+    assert "XRPUSD" in bot.symbols, "XRPUSD must be loaded"
     
     # Check settings overrides
     bio_be = bot.get_symbol_setting("BIOUSD", "use_breakeven", True)
@@ -28,10 +29,13 @@ def run_test():
     eth_tp1 = bot.get_symbol_setting("ETHUSD", "tp1_percent", 25.0)
     sol_be = bot.get_symbol_setting("SOLUSD", "use_breakeven", True)
     sol_tp1 = bot.get_symbol_setting("SOLUSD", "tp1_percent", 25.0)
+    xrp_be = bot.get_symbol_setting("XRPUSD", "use_breakeven", True)
+    xrp_tp1 = bot.get_symbol_setting("XRPUSD", "tp1_percent", 25.0)
     
     print(f"BIOUSD settings: use_breakeven={bio_be}, tp1_percent={bio_tp1}")
     print(f"ETHUSD settings: use_breakeven={eth_be}, tp1_percent={eth_tp1}")
     print(f"SOLUSD settings: use_breakeven={sol_be}, tp1_percent={sol_tp1}")
+    print(f"XRPUSD settings: use_breakeven={xrp_be}, tp1_percent={xrp_tp1}")
     
     assert bio_be is True, "BIOUSD must use breakeven"
     assert bio_tp1 == 25.0, "BIOUSD must have 25% TP1"
@@ -39,6 +43,8 @@ def run_test():
     assert eth_tp1 == 0.0, "ETHUSD must have 0% TP1"
     assert sol_be is False, "SOLUSD must not use breakeven"
     assert sol_tp1 == 0.0, "SOLUSD must have 0% TP1"
+    assert xrp_be is True, "XRPUSD must use breakeven"
+    assert xrp_tp1 == 25.0, "XRPUSD must have 25% TP1"
     print(f"{Colors.GREEN}[TEST 1 PASSED] Override settings verified successfully.{Colors.RESET}")
 
     # Set up metadata
