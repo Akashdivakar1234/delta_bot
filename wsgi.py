@@ -86,11 +86,20 @@ def run_reversion_bot():
 if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
     mode = os.environ.get("STRATEGY_MODE", "BOTH").upper()
     
-    if mode == "REVERSION_ONLY":
+    reversion_enabled = True
+    try:
+        if os.path.exists("reversion_config.json"):
+            with open("reversion_config.json", "r") as f:
+                r_cfg = json.load(f)
+                reversion_enabled = r_cfg.get("enabled", True)
+    except Exception as e:
+        print(f"Error reading reversion config enabled status: {e}")
+    
+    if mode == "REVERSION_ONLY" and reversion_enabled:
         write_status(trend_status="disabled", reversion_status="starting")
         t2 = threading.Thread(target=run_reversion_bot, daemon=True)
         t2.start()
-    elif mode == "TREND_ONLY":
+    elif mode == "TREND_ONLY" or not reversion_enabled:
         write_status(trend_status="starting", reversion_status="disabled")
         t1 = threading.Thread(target=run_trend_bot, daemon=True)
         t1.start()
