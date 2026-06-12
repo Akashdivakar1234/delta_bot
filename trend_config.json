@@ -11,7 +11,7 @@
   ],
   "is_testnet": false,
   "use_india_delta": true,
-  "symbols": ["BIOUSD", "ETHUSD", "SOLUSD", "XRPUSD"],
+  "symbols": ["BIOUSD", "XRPUSD"],
   "symbol": "BIOUSD",
   "symbol_settings": {
     "BIOUSD": {

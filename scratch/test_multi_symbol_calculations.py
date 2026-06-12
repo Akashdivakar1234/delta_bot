@@ -14,6 +14,15 @@ def run_test():
     bot = DeltaTrendBot("trend_config.json")
     bot.is_mock_mode = True
     
+    # Decouple test from user configuration changes
+    bot.symbols = ["BIOUSD", "ETHUSD", "SOLUSD", "XRPUSD"]
+    bot.symbol_settings = {
+        "BIOUSD": {"use_breakeven": True, "tp1_percent": 25.0, "target_rr_ratio": 5.0, "leverage": 5},
+        "ETHUSD": {"use_breakeven": True, "tp1_percent": 0.0, "target_rr_ratio": 5.0, "leverage": 5},
+        "SOLUSD": {"use_breakeven": True, "tp1_percent": 0.0, "target_rr_ratio": 5.0, "leverage": 5},
+        "XRPUSD": {"use_breakeven": True, "tp1_percent": 25.0, "target_rr_ratio": 5.0, "leverage": 5}
+    }
+    
     # Verify setup
     print("\n[TEST 1] Verifying Symbol Loading & Settings Overrides...")
     print(f"Loaded symbols: {bot.symbols}")
