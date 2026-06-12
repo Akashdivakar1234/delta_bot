@@ -556,8 +556,8 @@ class DeltaTrendBot:
                 self.product_info[symbol] = {
                     "id": 12345,
                     "symbol": symbol,
-                    "tick_size": 0.05 if "ETH" in symbol else (0.0001 if "SOL" in symbol else 0.00001),
-                    "contract_value": 0.01 if "ETH" in symbol else (1.0 if "SOL" in symbol else 1.0),
+                    "tick_size": 0.05 if "ETH" in symbol else (0.0001 if any(s in symbol for s in ["SOL", "XRP", "SUI"]) else 0.00001),
+                    "contract_value": 0.01 if "ETH" in symbol else (10.0 if "BIO" in symbol else 1.0),
                     "step_size": 1.0
                 }
             return True

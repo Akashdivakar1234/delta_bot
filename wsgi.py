@@ -368,7 +368,7 @@ def pnl_tracker():
                 wr = round((s["wins"] / s["trades"] * 100), 1) if s["trades"] > 0 else 0
                 avg_win = round(s["pnl_usd"] / s["wins"], 6) if s["wins"] > 0 else 0
                 avg_loss = round((s["pnl_usd"] - (avg_win * s["wins"])) / s["losses"], 6) if s["losses"] > 0 else 0
-                strategy_name = "Trend Following" if sym in ["XRPUSD", "BTCUSD", "BIOUSD"] else "Mean Reversion" if sym == "ADAUSD" else "Unknown"
+                strategy_name = "Trend Following" if sym in ["XRPUSD", "BTCUSD", "BIOUSD", "SUIUSD", "ETHUSD", "SOLUSD"] else "Mean Reversion" if sym == "ADAUSD" else "Unknown"
                 result[sym] = {
                     "strategy": strategy_name,
                     "pnl_usd": round(s["pnl_usd"], 6),
@@ -450,7 +450,7 @@ def pnl_tracker():
             avg_loss = round(total_loss_usd / sym_data["losses"], 6) if sym_data["losses"] > 0 else 0
             rr_ratio = round(abs(avg_win / avg_loss), 2) if avg_loss != 0 else 0
             expectancy = round(avg_win * (wr / 100) + avg_loss * (1 - wr / 100), 6)
-            strategy_name = "Trend Following" if sym in ["XRPUSD", "BTCUSD", "BIOUSD"] else "Mean Reversion" if sym == "ADAUSD" else "Unknown"
+            strategy_name = "Trend Following" if sym in ["XRPUSD", "BTCUSD", "BIOUSD", "SUIUSD", "ETHUSD", "SOLUSD"] else "Mean Reversion" if sym == "ADAUSD" else "Unknown"
 
             strategy_report[sym] = {
                 "strategy": strategy_name,
