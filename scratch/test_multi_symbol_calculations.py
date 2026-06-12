@@ -39,9 +39,9 @@ def run_test():
     
     assert bio_be is True, "BIOUSD must use breakeven"
     assert bio_tp1 == 25.0, "BIOUSD must have 25% TP1"
-    assert eth_be is False, "ETHUSD must not use breakeven"
+    assert eth_be is True, "ETHUSD must use breakeven"
     assert eth_tp1 == 0.0, "ETHUSD must have 0% TP1"
-    assert sol_be is False, "SOLUSD must not use breakeven"
+    assert sol_be is True, "SOLUSD must use breakeven"
     assert sol_tp1 == 0.0, "SOLUSD must have 0% TP1"
     assert xrp_be is True, "XRPUSD must use breakeven"
     assert xrp_tp1 == 25.0, "XRPUSD must have 25% TP1"
@@ -101,13 +101,13 @@ def run_test():
     print("\n[TEST 4] Verifying Exit & Trigger Differences...")
     # For SOLUSD (Option 1): TP1 percent is 0.
     # If price moves past +2R (150 + 2*5 = 160), TP1 should NOT trigger.
-    # If price moves past +1.5R (150 + 1.5*5 = 157.5), Stop Loss should NOT move to breakeven.
+    # If price moves past +1.5R (150 + 1.5*5 = 157.5), Stop Loss should move to breakeven.
     # Set mock tickers:
     # 1. Price at 158.0 (+1.6R)
     bot.api.get_ticker = lambda sym: {"close": 158.0}
     bot.check_position_exits("SOLUSD")
-    assert bot.active_trades["SOLUSD"]["is_breakeven_active"] is False, "SOLUSD must not move SL to breakeven"
-    assert bot.active_trades["SOLUSD"]["sl_price"] == 145.0, "SOLUSD SL must remain at 145.0"
+    assert bot.active_trades["SOLUSD"]["is_breakeven_active"] is True, "SOLUSD must move SL to breakeven"
+    assert bot.active_trades["SOLUSD"]["sl_price"] == 150.0, "SOLUSD SL must move to 150.0 (entry)"
     
     # 2. Price at 162.0 (+2.4R)
     bot.api.get_ticker = lambda sym: {"close": 162.0}

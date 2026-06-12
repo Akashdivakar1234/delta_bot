@@ -21,13 +21,13 @@
       "leverage": 5
     },
     "ETHUSD": {
-      "use_breakeven": false,
+      "use_breakeven": true,
       "tp1_percent": 0.0,
       "target_rr_ratio": 5.0,
       "leverage": 5
     },
     "SOLUSD": {
-      "use_breakeven": false,
+      "use_breakeven": true,
       "tp1_percent": 0.0,
       "target_rr_ratio": 5.0,
       "leverage": 5
