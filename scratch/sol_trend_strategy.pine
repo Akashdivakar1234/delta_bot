@@ -1,0 +1,80 @@
+//@version=5
+strategy("SOL 1H Trend Strategy (Option 1 - 3% Risk, 5.0R TP)", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.035)
+
+// ==========================================
+// 🛠️ PARAMETERS & INPUTS
+// ==========================================
+donchianLength = input.int(25, title="Donchian Channel Length")
+riskPercent = input.float(3.0, title="Risk Percent per Trade")
+
+// --- FETCH HEIKIN-ASHI DATA IN THE BACKGROUND ---
+ha_ticker = ticker.heikinashi(syminfo.tickerid)
+ha_open = request.security(ha_ticker, timeframe.period, open)
+ha_high = request.security(ha_ticker, timeframe.period, high)
+ha_low = request.security(ha_ticker, timeframe.period, low)
+ha_close = request.security(ha_ticker, timeframe.period, close)
+
+// --- DONCHIAN CHANNEL CALCULATIONS ON HEIKIN-ASHI ---
+// Shift by 1 bar to avoid backtesting look-ahead bias
+channelUpper = ta.highest(ha_high[1], donchianLength)
+channelLower = ta.lowest(ha_low[1], donchianLength)
+midBand = (channelUpper + channelLower) / 2.0
+
+// --- VOLUMES & TREND FILTER ---
+volMA = ta.sma(volume, 20)
+isVolumeConfirmed = volume > (volMA * 1.2)
+
+// 4H EMA 50 Macro Trend Filter
+macroEma = request.security(syminfo.tickerid, "240", ta.ema(close, 50))
+macroBullish = close > macroEma
+
+// --- BREAKOUT SIGNALS ---
+buySignal = (ha_close[1] <= channelUpper[1]) and (ha_close > channelUpper) and isVolumeConfirmed and macroBullish
+sellSignal = (ha_close[1] >= channelLower[1]) and (ha_close < channelLower) and isVolumeConfirmed and (not macroBullish)
+
+// --- POSITION TRACKING & RISK SIZING ---
+var float entryPrice = na
+var float slPrice = na
+var float tpPrice = na
+
+if (strategy.position_size == 0)
+    entryPrice := na
+    slPrice := na
+    tpPrice := na
+
+// Entry Logic
+if (strategy.position_size == 0 and buySignal)
+    entryPrice := close
+    slPrice := midBand
+    tpPrice := entryPrice + (5.0 * (entryPrice - slPrice))
+    
+    // Risk-based sizing
+    riskUsd = (strategy.equity * (riskPercent / 100.0))
+    tradeRisk = entryPrice - slPrice
+    qty = riskUsd / tradeRisk
+    
+    strategy.entry("Long Breakout", strategy.long, qty=qty)
+
+if (strategy.position_size == 0 and sellSignal)
+    entryPrice := close
+    slPrice := midBand
+    tpPrice := entryPrice - (5.0 * (slPrice - entryPrice))
+    
+    // Risk-based sizing
+    riskUsd = (strategy.equity * (riskPercent / 100.0))
+    tradeRisk = slPrice - entryPrice
+    qty = riskUsd / tradeRisk
+    
+    strategy.entry("Short Breakout", strategy.short, qty=qty)
+
+// --- EXIT EXECUTION (EXCHANGE-SIDE OCO/BRACKET REPRESENTATION) ---
+if (strategy.position_size > 0)
+    strategy.exit("Long Exit", "Long Breakout", stop=slPrice, limit=tpPrice)
+
+if (strategy.position_size < 0)
+    strategy.exit("Short Exit", "Short Breakout", stop=slPrice, limit=tpPrice)
+
+// --- PLOTTING ---
+plot(channelUpper, color=color.green, title="Channel Upper")
+plot(channelLower, color=color.red, title="Channel Lower")
+plot(midBand, color=color.blue, title="Mid Band (Stop Loss Level)")

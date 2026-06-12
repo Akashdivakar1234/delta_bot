@@ -493,7 +493,12 @@ class DeltaTrendBot:
         
         self.is_testnet = self.config["is_testnet"]
         self.use_india_delta = self.config["use_india_delta"]
-        self.symbol = self.config["symbol"]
+        
+        # Multi-symbol configuration
+        self.symbols = self.config.get("symbols", [self.config.get("symbol", "BIOUSD")])
+        self.symbol = self.symbols[0]  # Backwards compatibility
+        self.symbol_settings = self.config.get("symbol_settings", {})
+        
         self.risk_percent = self.config.get("risk_percent", 2.0)
         self.capital_mode = self.config.get("capital_mode", "auto")
         self.static_capital_inr = self.config.get("static_capital_inr", 350.0)
@@ -518,9 +523,14 @@ class DeltaTrendBot:
         )
         
         self.product_info = {}
-        self.last_processed_candle_time = 0
+        self.last_processed_candle_time = {}
         self.state_file = "active_trade_trend.json"
         self.load_trade_state()
+        
+    def get_symbol_setting(self, symbol, key, default):
+        if symbol in self.symbol_settings and key in self.symbol_settings[symbol]:
+            return self.symbol_settings[symbol][key]
+        return self.config.get(key, default)
         
     def send_discord_message(self, message):
         enabled = self.config.get("discord_enabled", False)
@@ -542,58 +552,73 @@ class DeltaTrendBot:
     def setup_account(self):
         if self.is_mock_mode:
             log_warning("Bot is running in MOCK mode. Order placement simulated.")
+            for symbol in self.symbols:
+                self.product_info[symbol] = {
+                    "id": 12345,
+                    "symbol": symbol,
+                    "tick_size": 0.05 if "ETH" in symbol else (0.0001 if "SOL" in symbol else 0.00001),
+                    "contract_value": 0.01 if "ETH" in symbol else (1.0 if "SOL" in symbol else 1.0),
+                    "step_size": 1.0
+                }
             return True
             
-        log_info(f"Fetching product metadata for {self.symbol}...")
+        log_info("Fetching product metadata from Delta Exchange...")
         products = self.api.get_products()
-        match = next((p for p in products if p.get('symbol') == self.symbol), None)
-        if not match:
-            log_error(f"Symbol {self.symbol} not found on Delta Exchange.")
-            return False
-            
-        self.product_info = {
-            "id": match["id"],
-            "symbol": match["symbol"],
-            "tick_size": float(match["tick_size"]),
-            "contract_value": float(match.get("contract_value", 1.0)),
-            "step_size": float(match.get("step_size", 1.0))
-        }
-        log_success(f"Product Loaded: ID={self.product_info['id']}, Tick Size={self.product_info['tick_size']}, Contract Value={self.product_info['contract_value']}")
         
+        for symbol in self.symbols:
+            match = next((p for p in products if p.get('symbol') == symbol), None)
+            if not match:
+                log_error(f"Symbol {symbol} not found on Delta Exchange.")
+                return False
+                
+            self.product_info[symbol] = {
+                "id": match["id"],
+                "symbol": match["symbol"],
+                "tick_size": float(match["tick_size"]),
+                "contract_value": float(match.get("contract_value", 1.0)),
+                "step_size": float(match.get("step_size", 1.0))
+            }
+            log_success(f"Product Loaded for {symbol}: ID={self.product_info[symbol]['id']}, Tick Size={self.product_info[symbol]['tick_size']}, Contract Value={self.product_info[symbol]['contract_value']}")
+            
+            symbol_leverage = self.get_symbol_setting(symbol, "leverage", self.leverage)
+            log_info(f"Setting leverage for {symbol} to {symbol_leverage}x...")
+            res = self.api.set_leverage(self.product_info[symbol]["id"], symbol_leverage)
+            if res.get("success"):
+                log_success(f"Leverage for {symbol} set to {symbol_leverage}x.")
+            else:
+                log_warning(f"Could not set leverage for {symbol} automatically. Reason: {res.get('error', 'unknown')}")
+                
         log_info("Setting Account Margin Mode to ISOLATED...")
         res = self.api.set_margin_mode_isolated()
         if res.get("success"):
             log_success("Margin mode set to ISOLATED.")
         else:
             log_warning(f"Could not set margin mode automatically. Reason: {res.get('error', 'unknown')}")
-        
-        log_info(f"Setting leverage to {self.leverage}x...")
-        res = self.api.set_leverage(self.product_info["id"], self.leverage)
-        if res.get("success"):
-            log_success(f"Leverage set to {self.leverage}x.")
-        else:
-            log_warning(f"Could not set leverage automatically. Reason: {res.get('error', 'unknown')}")
         return True
 
-    def scan_market(self):
+    def scan_market(self, symbol):
+        # Skip scanning if a trade is already active for this symbol
+        if self.active_trades.get(symbol, {}).get("position_active", False):
+            return
+
         # 1. USDINR rate
         usd_inr = get_usd_inr_rate()
         if not usd_inr:
             usd_inr = self.usd_inr_fallback
         
         # 2. Fetch candles (limit=100 for enough warm-up data for ADX Wilder's calculation)
-        candles = self.api.get_candles(self.symbol, self.resolution, limit=100)
+        candles = self.api.get_candles(symbol, self.resolution, limit=100)
         if len(candles) < 60:
-            log_warning("Insufficient candles to compute indicators.")
+            log_warning(f"[{symbol}] Insufficient candles to compute indicators.")
             return
             
         completed_candles = candles[:-1]
         latest_completed_time = completed_candles[-1]['time']
         
-        if latest_completed_time <= self.last_processed_candle_time:
+        if latest_completed_time <= self.last_processed_candle_time.get(symbol, 0):
             return
             
-        self.last_processed_candle_time = latest_completed_time
+        self.last_processed_candle_time[symbol] = latest_completed_time
         
         # Latest completed standard close (used as the fill entry price)
         latest_close = float(completed_candles[-1]['close'])
@@ -623,7 +648,7 @@ class DeltaTrendBot:
         is_volume_confirmed = latest_volume > (avg_volume * 1.2)
         
         # 6. Macro Trend Filter (4-Hour EMA 50 on standard close)
-        candles_4h = self.api.get_candles(self.symbol, "4h", limit=100)
+        candles_4h = self.api.get_candles(symbol, "4h", limit=100)
         macro_bullish = True
         if len(candles_4h) >= 55:
             completed_4h = candles_4h[:-1]
@@ -632,38 +657,40 @@ class DeltaTrendBot:
             if ema_50_4h:
                 latest_close_4h = closes_4h[-1]
                 macro_bullish = latest_close_4h > ema_50_4h
-                log_info(f"4H EMA 50 Filter: Close={latest_close_4h:.5f} | EMA={ema_50_4h:.5f} | Bullish={macro_bullish}")
+                log_info(f"[{symbol}] 4H EMA 50 Filter: Close={latest_close_4h:.5f} | EMA={ema_50_4h:.5f} | Bullish={macro_bullish}")
         else:
-            log_warning("Insufficient 4H candles for trend filter. Defaulting to True.")
+            log_warning(f"[{symbol}] Insufficient 4H candles for trend filter. Defaulting to True.")
             
         curr_ha_close = ha_candles[-1]['close']
         prev_ha_close = ha_candles[-2]['close']
         
-        log_info(f"HA Scan ({self.resolution}): Upper={curr_upper:.5f} | Lower={curr_lower:.5f} | Mid={mid_band:.5f} | HA Close={curr_ha_close:.5f} | ADX={adx_val:.2f} (Rising: {is_rising}) | Vol Confirmed: {is_volume_confirmed}")
+        log_info(f"[{symbol}] HA Scan ({self.resolution}): Upper={curr_upper:.5f} | Lower={curr_lower:.5f} | Mid={mid_band:.5f} | HA Close={curr_ha_close:.5f} | ADX={adx_val:.2f} (Rising: {is_rising}) | Vol Confirmed: {is_volume_confirmed}")
         
         # Check triggers (crossover/crossunder on Heikin-Ashi close)
         buy_signal = prev_ha_close <= prev_upper and curr_ha_close > curr_upper and is_volatile and is_volume_confirmed and macro_bullish
         sell_signal = prev_ha_close >= prev_lower and curr_ha_close < curr_lower and is_volatile and is_volume_confirmed and not macro_bullish
         
+        target_rr = self.get_symbol_setting(symbol, "target_rr_ratio", self.get_symbol_setting(symbol, "tp2_ratio", self.tp2_ratio))
+
         # BULLISH Breakout
         if buy_signal:
             entry_price = latest_close
             stop_loss = mid_band
-            take_profit = entry_price + (self.rr_ratio * (entry_price - stop_loss))
+            take_profit = entry_price + (target_rr * (entry_price - stop_loss))
             
-            log_setup("HA DONCHIAN BULLISH BREAKOUT TRIGGERED!")
-            log_info(f"Entry: {entry_price:.5f} | SL: {stop_loss:.5f} | TP: {take_profit:.5f}")
-            self.execute_trade("BUY", entry_price, stop_loss, take_profit, usd_inr)
+            log_setup(f"[{symbol}] HA DONCHIAN BULLISH BREAKOUT TRIGGERED!")
+            log_info(f"[{symbol}] Entry: {entry_price:.5f} | SL: {stop_loss:.5f} | TP: {take_profit:.5f}")
+            self.execute_trade("BUY", symbol, entry_price, stop_loss, take_profit, usd_inr)
             
         # BEARISH Breakout
         elif sell_signal:
             entry_price = latest_close
             stop_loss = mid_band
-            take_profit = entry_price - (self.rr_ratio * (stop_loss - entry_price))
+            take_profit = entry_price - (target_rr * (stop_loss - entry_price))
             
-            log_setup("HA DONCHIAN BEARISH BREAKOUT TRIGGERED!")
-            log_info(f"Entry: {entry_price:.5f} | SL: {stop_loss:.5f} | TP: {take_profit:.5f}")
-            self.execute_trade("SELL", entry_price, stop_loss, take_profit, usd_inr)
+            log_setup(f"[{symbol}] HA DONCHIAN BEARISH BREAKOUT TRIGGERED!")
+            log_info(f"[{symbol}] Entry: {entry_price:.5f} | SL: {stop_loss:.5f} | TP: {take_profit:.5f}")
+            self.execute_trade("SELL", symbol, entry_price, stop_loss, take_profit, usd_inr)
 
     def get_current_risk_inr(self, usd_inr):
         if self.is_mock_mode or self.capital_mode == "static":
@@ -690,38 +717,43 @@ class DeltaTrendBot:
         risk_inr = capital * (self.risk_percent / 100.0)
         return risk_inr
 
-    def execute_trade(self, side, entry, stop_loss, take_profit, usd_inr):
+    def execute_trade(self, side, symbol, entry, stop_loss, take_profit, usd_inr):
         price_distance = abs(entry - stop_loss)
         
-        tick_size = self.product_info.get("tick_size", 0.01)
+        info = self.product_info.get(symbol, {})
+        tick_size = info.get("tick_size", 0.01)
         entry_rounded = round_step(entry, tick_size)
         sl_rounded = round_step(stop_loss, tick_size)
         
+        tp1_ratio = self.get_symbol_setting(symbol, "tp1_ratio", self.tp1_ratio)
+        tp2_ratio = self.get_symbol_setting(symbol, "target_rr_ratio", self.get_symbol_setting(symbol, "tp2_ratio", self.tp2_ratio))
+        tp1_percent = self.get_symbol_setting(symbol, "tp1_percent", self.tp1_percent)
+
         if side.upper() == "BUY":
-            tp1_raw = entry + (self.tp1_ratio * price_distance)
-            tp2_raw = entry + (self.tp2_ratio * price_distance)
+            tp1_raw = entry + (tp1_ratio * price_distance)
+            tp2_raw = entry + (tp2_ratio * price_distance)
         else:
-            tp1_raw = entry - (self.tp1_ratio * price_distance)
-            tp2_raw = entry - (self.tp2_ratio * price_distance)
+            tp1_raw = entry - (tp1_ratio * price_distance)
+            tp2_raw = entry - (tp2_ratio * price_distance)
             
         tp1_rounded = round_step(tp1_raw, tick_size)
         tp2_rounded = round_step(tp2_raw, tick_size)
         
         current_risk_inr = self.get_current_risk_inr(usd_inr)
         risk_usd = current_risk_inr / usd_inr
-        contract_val = self.product_info.get("contract_value", 1.0)
+        contract_val = info.get("contract_value", 1.0)
         
         raw_size = risk_usd / (price_distance * contract_val)
-        step_size = self.product_info.get("step_size", 1.0)
+        step_size = info.get("step_size", 1.0)
         final_size = floor_step(raw_size, step_size)
         
         actual_risk_inr = (final_size * contract_val * price_distance) * usd_inr
         
-        log_info(f"Sizing: Target Risk={current_risk_inr:.2f} INR | Calculated Size={final_size} contracts")
-        log_info(f"Actual Risk on execution: {actual_risk_inr:.2f} INR")
+        log_info(f"[{symbol}] Sizing: Target Risk={current_risk_inr:.2f} INR | Calculated Size={final_size} contracts")
+        log_info(f"[{symbol}] Actual Risk on execution: {actual_risk_inr:.2f} INR")
         
         if final_size <= 0:
-            log_warning("Calculated position size is 0. Trade skipped.")
+            log_warning(f"[{symbol}] Calculated position size is 0. Trade skipped.")
             return
             
         if actual_risk_inr > (current_risk_inr + 0.05):
@@ -730,33 +762,33 @@ class DeltaTrendBot:
             
         if self.is_mock_mode:
             log_success(f"[MOCK] Placed Trend Bracket Order:")
-            log_success(f"[MOCK] Symbol: {self.symbol} | Side: {side} | Size: {final_size} contracts")
-            log_success(f"[MOCK] Limit Entry: {entry_rounded:.5f} | Stop Loss: {sl_rounded:.5f} | TP1 (25%): {tp1_rounded:.5f} | TP2 (75%): {tp2_rounded:.5f}")
+            log_success(f"[MOCK] Symbol: {symbol} | Side: {side} | Size: {final_size} contracts")
+            log_success(f"[MOCK] Limit Entry: {entry_rounded:.5f} | Stop Loss: {sl_rounded:.5f} | TP1 ({tp1_percent}%): {tp1_rounded:.5f} | TP2 ({100 - tp1_percent}%): {tp2_rounded:.5f}")
             self.send_discord_message(
-                f"🔔 **[MOCK] {self.symbol} Trend Breakout Trade Entered**\n"
+                f"🔔 **[MOCK] {symbol} Trend Breakout Trade Entered**\n"
                 f"Side: `{side.upper()}`\n"
                 f"Contracts: `{final_size}`\n"
                 f"Entry Price: `${entry_rounded:.5f}`\n"
                 f"Stop Loss: `${sl_rounded:.5f}`\n"
-                f"TP1 (25%): `${tp1_rounded:.5f}`\n"
-                f"TP2 (75%): `${tp2_rounded:.5f}`"
+                f"TP1 ({tp1_percent}%): `${tp1_rounded:.5f}`\n"
+                f"TP2 ({100 - tp1_percent}%): `${tp2_rounded:.5f}`"
             )
-            self.position_active = True
-            self.entry_price = entry_rounded
-            self.tp1_price = tp1_rounded
-            self.tp2_price = tp2_rounded
-            self.tp_price = tp2_rounded # For compatibility
-            self.sl_price = sl_rounded
-            self.entry_side = side.upper()
-            self.entry_size = final_size
-            self.tp1_order_placed = True
-            self.tp1_order_id = "MOCK_TP1"
-            self.is_breakeven_active = False
+            state = self.active_trades[symbol]
+            state["position_active"] = True
+            state["entry_price"] = entry_rounded
+            state["tp1_price"] = tp1_rounded
+            state["tp2_price"] = tp2_rounded
+            state["tp_price"] = tp2_rounded
+            state["sl_price"] = sl_rounded
+            state["entry_side"] = side.upper()
+            state["entry_size"] = final_size
+            state["tp1_order_placed"] = True if tp1_percent > 0 else False
+            state["tp1_order_id"] = "MOCK_TP1" if tp1_percent > 0 else None
+            state["is_breakeven_active"] = False
             self.save_trade_state()
         else:
-            log_info("Submitting bracket order to Delta Exchange API...")
-            product_id = self.product_info["id"]
-            # We place the main bracket order for 100% size with TP at TP2 (+5R)
+            log_info(f"[{symbol}] Submitting bracket order to Delta Exchange API...")
+            product_id = info["id"]
             res = self.api.place_bracket_order(
                 product_id=product_id,
                 size=final_size,
@@ -768,31 +800,32 @@ class DeltaTrendBot:
             if res.get("success"):
                 log_success(f"Order successfully filled on Exchange: {res}")
                 self.send_discord_message(
-                    f"🔔 **{self.symbol} Trend Breakout Trade Entered**\n"
+                    f"🔔 **{symbol} Trend Breakout Trade Entered**\n"
                     f"Side: `{side.upper()}`\n"
                     f"Contracts: `{final_size}`\n"
                     f"Entry Price: `${entry_rounded:.5f}`\n"
                     f"Stop Loss: `${sl_rounded:.5f}`\n"
-                    f"TP1 (25%): `${tp1_rounded:.5f}`\n"
-                    f"TP2 (75%): `${tp2_rounded:.5f}`\n"
+                    f"TP1 ({tp1_percent}%): `${tp1_rounded:.5f}`\n"
+                    f"TP2 ({100 - tp1_percent}%): `${tp2_rounded:.5f}`\n"
                     f"Risk: `₹{actual_risk_inr:.2f}`"
                 )
-                self.position_active = True
-                self.entry_price = entry_rounded
-                self.tp1_price = tp1_rounded
-                self.tp2_price = tp2_rounded
-                self.tp_price = tp2_rounded
-                self.sl_price = sl_rounded
-                self.entry_side = side.upper()
-                self.entry_size = final_size
-                self.tp1_order_placed = False
-                self.tp1_order_id = None
-                self.is_breakeven_active = False
+                state = self.active_trades[symbol]
+                state["position_active"] = True
+                state["entry_price"] = entry_rounded
+                state["tp1_price"] = tp1_rounded
+                state["tp2_price"] = tp2_rounded
+                state["tp_price"] = tp2_rounded
+                state["sl_price"] = sl_rounded
+                state["entry_side"] = side.upper()
+                state["entry_size"] = final_size
+                state["tp1_order_placed"] = False
+                state["tp1_order_id"] = None
+                state["is_breakeven_active"] = False
                 self.save_trade_state()
                 # Log success to dashboard
                 try:
                     import json, os
-                    status = {"trend_bot": "running", "latest_error": f"SUCCESS: Trend order filled for {final_size} {self.symbol}"}
+                    status = {"trend_bot": "running", "latest_error": f"SUCCESS: Trend order filled for {final_size} {symbol}"}
                     if os.path.exists("bot_status.json"):
                         with open("bot_status.json", "r") as f:
                             status = {**json.load(f), **status}
@@ -802,10 +835,10 @@ class DeltaTrendBot:
             else:
                 err_msg = res.get("error", str(res))
                 if "bracket_order_position_exists" in err_msg or "bracket_order_position_exists" in str(res):
-                    log_info(f"Bracket order or position already exists for {self.symbol}. Skipping trade.")
+                    log_info(f"Bracket order or position already exists for {symbol}. Skipping trade.")
                 else:
                     log_error(f"Exchange rejected order: {res}")
-                    self.send_discord_message(f"⚠️ **{self.symbol} Trend Bot order failed:** Exchange rejected the order: `{err_msg}`")
+                    self.send_discord_message(f"⚠️ **{symbol} Trend Bot order failed:** Exchange rejected the order: `{err_msg}`")
                     # Log error to dashboard
                     try:
                         import json, os
@@ -818,111 +851,119 @@ class DeltaTrendBot:
                     except: pass
 
     def load_trade_state(self):
-        self.position_active = False
-        self.entry_price = None
-        self.tp1_price = None
-        self.tp2_price = None
-        self.tp_price = None
-        self.sl_price = None
-        self.entry_side = None
-        self.entry_size = None
-        self.tp1_order_placed = False
-        self.tp1_order_id = None
-        self.is_breakeven_active = False
+        self.active_trades = {}
+        for symbol in self.symbols:
+            self.active_trades[symbol] = {
+                "position_active": False,
+                "entry_price": None,
+                "tp1_price": None,
+                "tp2_price": None,
+                "tp_price": None,
+                "sl_price": None,
+                "entry_side": None,
+                "entry_size": None,
+                "tp1_order_placed": False,
+                "tp1_order_id": None,
+                "is_breakeven_active": False
+            }
         
         import os
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r") as f:
                     data = json.load(f)
-                    self.position_active = data.get("position_active", False)
-                    self.entry_price = data.get("entry_price")
-                    self.tp1_price = data.get("tp1_price")
-                    self.tp2_price = data.get("tp2_price")
-                    self.tp_price = data.get("tp2_price") # Backwards compatibility
-                    self.sl_price = data.get("sl_price")
-                    self.entry_side = data.get("entry_side")
-                    self.entry_size = data.get("entry_size")
-                    self.tp1_order_placed = data.get("tp1_order_placed", False)
-                    self.tp1_order_id = data.get("tp1_order_id")
-                    self.is_breakeven_active = data.get("is_breakeven_active", False)
-                    log_info(f"Loaded active trade state: {data}")
+                    if "position_active" in data:
+                        # Legacy single-symbol trade state format
+                        legacy_symbol = self.symbols[0]
+                        self.active_trades[legacy_symbol] = {
+                            "position_active": data.get("position_active", False),
+                            "entry_price": data.get("entry_price"),
+                            "tp1_price": data.get("tp1_price"),
+                            "tp2_price": data.get("tp2_price"),
+                            "tp_price": data.get("tp2_price"),
+                            "sl_price": data.get("sl_price"),
+                            "entry_side": data.get("entry_side"),
+                            "entry_size": data.get("entry_size"),
+                            "tp1_order_placed": data.get("tp1_order_placed", False),
+                            "tp1_order_id": data.get("tp1_order_id"),
+                            "is_breakeven_active": data.get("is_breakeven_active", False)
+                        }
+                        log_info(f"Loaded legacy trade state for {legacy_symbol}: {data}")
+                    else:
+                        for symbol in self.symbols:
+                            if symbol in data:
+                                self.active_trades[symbol] = {**self.active_trades[symbol], **data[symbol]}
+                        log_info(f"Loaded active trade states: {self.active_trades}")
             except Exception as e:
                 log_error(f"Error loading trade state: {e}")
 
     def save_trade_state(self):
         try:
-            data = {
-                "position_active": self.position_active,
-                "entry_price": self.entry_price,
-                "tp1_price": self.tp1_price,
-                "tp2_price": self.tp2_price,
-                "sl_price": self.sl_price,
-                "entry_side": self.entry_side,
-                "entry_size": self.entry_size,
-                "tp1_order_placed": self.tp1_order_placed,
-                "tp1_order_id": self.tp1_order_id,
-                "is_breakeven_active": self.is_breakeven_active
-            }
             with open(self.state_file, "w") as f:
-                json.dump(data, f)
+                json.dump(self.active_trades, f)
         except Exception as e:
             log_error(f"Error saving trade state: {e}")
 
-    def check_position_exits(self):
+    def check_position_exits(self, symbol):
+        state = self.active_trades[symbol]
+        use_breakeven = self.get_symbol_setting(symbol, "use_breakeven", self.use_breakeven)
+        breakeven_trigger = self.get_symbol_setting(symbol, "breakeven_trigger", self.breakeven_trigger)
+        tp1_ratio = self.get_symbol_setting(symbol, "tp1_ratio", self.tp1_ratio)
+        tp2_ratio = self.get_symbol_setting(symbol, "target_rr_ratio", self.get_symbol_setting(symbol, "tp2_ratio", self.tp2_ratio))
+        tp1_percent = self.get_symbol_setting(symbol, "tp1_percent", self.tp1_percent)
+        
         # 1. MOCK MODE EXIT CHECKING
         if self.is_mock_mode:
-            if not self.position_active:
+            if not state["position_active"]:
                 return
-            # Fetch latest price to check wicks/close against TP or SL
-            ticker = self.api.get_ticker(self.symbol)
+            ticker = self.api.get_ticker(symbol)
             if not ticker:
                 return
             current_price = float(ticker.get("close", ticker.get("mark_price", 0)))
             if current_price <= 0:
                 return
                 
-            price_distance = abs(self.tp2_price - self.entry_price) / self.tp2_ratio
+            price_distance = abs(state["tp2_price"] - state["entry_price"]) / tp2_ratio
             
             # A. Check breakeven trigger
-            if self.use_breakeven and not self.is_breakeven_active:
+            if use_breakeven and not state["is_breakeven_active"]:
                 be_triggered = False
-                if self.entry_side == "BUY" and current_price >= self.entry_price + (self.breakeven_trigger * price_distance):
+                if state["entry_side"] == "BUY" and current_price >= state["entry_price"] + (breakeven_trigger * price_distance):
                     be_triggered = True
-                elif self.entry_side == "SELL" and current_price <= self.entry_price - (self.breakeven_trigger * price_distance):
+                elif state["entry_side"] == "SELL" and current_price <= state["entry_price"] - (breakeven_trigger * price_distance):
                     be_triggered = True
                     
                 if be_triggered:
-                    self.is_breakeven_active = True
-                    self.sl_price = self.entry_price
-                    log_success(f"[MOCK] Stop Loss moved to Breakeven at ${self.entry_price:.5f}")
-                    self.send_discord_message(f"🔔 **[MOCK] {self.symbol} Stop Loss Moved to Breakeven** at `${self.entry_price:.5f}`")
+                    state["is_breakeven_active"] = True
+                    state["sl_price"] = state["entry_price"]
+                    log_success(f"[MOCK] Stop Loss for {symbol} moved to Breakeven at ${state['entry_price']:.5f}")
+                    self.send_discord_message(f"🔔 **[MOCK] {symbol} Stop Loss Moved to Breakeven** at `${state['entry_price']:.5f}`")
                     self.save_trade_state()
                     
             # B. Check TP1 fill
-            if self.tp1_order_placed:
+            if tp1_percent > 0 and state["tp1_order_placed"]:
                 tp1_hit = False
-                if self.entry_side == "BUY" and current_price >= self.tp1_price:
+                if state["entry_side"] == "BUY" and current_price >= state["tp1_price"]:
                     tp1_hit = True
-                elif self.entry_side == "SELL" and current_price <= self.tp1_price:
+                elif state["entry_side"] == "SELL" and current_price <= state["tp1_price"]:
                     tp1_hit = True
                     
                 if tp1_hit:
-                    tp1_size = self.entry_size * (self.tp1_percent / 100.0)
-                    pnl_usd = (self.tp1_price - self.entry_price) * tp1_size if self.entry_side == "BUY" else (self.entry_price - self.tp1_price) * tp1_size
+                    tp1_size = state["entry_size"] * (tp1_percent / 100.0)
+                    pnl_usd = (state["tp1_price"] - state["entry_price"]) * tp1_size if state["entry_side"] == "BUY" else (state["entry_price"] - state["tp1_price"]) * tp1_size
                     usd_inr = get_usd_inr_rate()
                     pnl_inr = pnl_usd * usd_inr
                     
-                    self.entry_size = self.entry_size - tp1_size
-                    self.tp1_order_placed = False
-                    self.tp1_order_id = None
-                    log_success(f"[MOCK] TP1 Hit at ${self.tp1_price:.5f}! Closed {self.tp1_percent}% of position.")
+                    state["entry_size"] = state["entry_size"] - tp1_size
+                    state["tp1_order_placed"] = False
+                    state["tp1_order_id"] = None
+                    log_success(f"[MOCK] {symbol} TP1 Hit at ${state['tp1_price']:.5f}! Closed {tp1_percent}% of position.")
                     self.send_discord_message(
-                        f"🔔 **[MOCK] {self.symbol} Trend TP1 Hit**\n"
-                        f"Exit Price: `${self.tp1_price:.5f}`\n"
+                        f"🔔 **[MOCK] {symbol} Trend TP1 Hit**\n"
+                        f"Exit Price: `${state['tp1_price']:.5f}`\n"
                         f"Contracts Closed: `{tp1_size}`\n"
                         f"Realized TP1 PnL: `${pnl_usd:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)\n"
-                        f"Remaining Contracts: `{self.entry_size}`"
+                        f"Remaining Contracts: `{state['entry_size']}`"
                     )
                     self.save_trade_state()
                     
@@ -932,52 +973,52 @@ class DeltaTrendBot:
             exit_reason = ""
             exit_price = 0.0
             
-            if self.entry_side == "BUY":
-                if current_price >= self.tp2_price:
+            if state["entry_side"] == "BUY":
+                if current_price >= state["tp2_price"]:
                     triggered = True
-                    exit_price = self.tp2_price
+                    exit_price = state["tp2_price"]
                     exit_reason = "Take Profit 2 (TP2) Hit"
-                    pnl_usd = (exit_price - self.entry_price) * self.entry_size
-                elif current_price <= self.sl_price:
+                    pnl_usd = (exit_price - state["entry_price"]) * state["entry_size"]
+                elif current_price <= state["sl_price"]:
                     triggered = True
-                    exit_price = self.sl_price
+                    exit_price = state["sl_price"]
                     exit_reason = "Stop Loss (SL) Hit"
-                    pnl_usd = (exit_price - self.entry_price) * self.entry_size
-            elif self.entry_side == "SELL":
-                if current_price <= self.tp2_price:
+                    pnl_usd = (exit_price - state["entry_price"]) * state["entry_size"]
+            elif state["entry_side"] == "SELL":
+                if current_price <= state["tp2_price"]:
                     triggered = True
-                    exit_price = self.tp2_price
+                    exit_price = state["tp2_price"]
                     exit_reason = "Take Profit 2 (TP2) Hit"
-                    pnl_usd = (self.entry_price - exit_price) * self.entry_size
-                elif current_price >= self.sl_price:
+                    pnl_usd = (state["entry_price"] - exit_price) * state["entry_size"]
+                elif current_price >= state["sl_price"]:
                     triggered = True
-                    exit_price = self.sl_price
+                    exit_price = state["sl_price"]
                     exit_reason = "Stop Loss (SL) Hit"
-                    pnl_usd = (self.entry_price - exit_price) * self.entry_size
+                    pnl_usd = (state["entry_price"] - exit_price) * state["entry_size"]
                     
             if triggered:
                 usd_inr = get_usd_inr_rate()
                 pnl_inr = pnl_usd * usd_inr
                 self.send_discord_message(
-                    f"🔔 **[MOCK] {self.symbol} Trend Trade Closed**\n"
+                    f"🔔 **[MOCK] {symbol} Trend Trade Closed**\n"
                     f"Exit Reason: `{exit_reason}`\n"
-                    f"Side: `{self.entry_side}`\n"
-                    f"Contracts: `{self.entry_size}`\n"
-                    f"Entry Price: `${self.entry_price:.5f}`\n"
+                    f"Side: `{state['entry_side']}`\n"
+                    f"Contracts: `{state['entry_size']}`\n"
+                    f"Entry Price: `${state['entry_price']:.5f}`\n"
                     f"Exit Price: `${exit_price:.5f}`\n"
                     f"Realized PnL: `${pnl_usd:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)"
                 )
-                self.position_active = False
-                self.entry_price = None
-                self.tp1_price = None
-                self.tp2_price = None
-                self.tp_price = None
-                self.sl_price = None
-                self.entry_side = None
-                self.entry_size = None
-                self.tp1_order_placed = False
-                self.tp1_order_id = None
-                self.is_breakeven_active = False
+                state["position_active"] = False
+                state["entry_price"] = None
+                state["tp1_price"] = None
+                state["tp2_price"] = None
+                state["tp_price"] = None
+                state["sl_price"] = None
+                state["entry_side"] = None
+                state["entry_size"] = None
+                state["tp1_order_placed"] = False
+                state["tp1_order_id"] = None
+                state["is_breakeven_active"] = False
                 self.save_trade_state()
             return
 
@@ -987,38 +1028,38 @@ class DeltaTrendBot:
         if isinstance(res, dict) and res.get("success"):
             positions = res.get("result", [])
             for p in positions:
-                if p.get("product_symbol") == self.symbol:
+                if p.get("product_symbol") == symbol:
                     size = float(p.get("size", 0))
                     if size != 0:
                         pos_match = p
                         break
         elif isinstance(res, list):
             for p in res:
-                if p.get("product_symbol") == self.symbol:
+                if p.get("product_symbol") == symbol:
                     size = float(p.get("size", 0))
                     if size != 0:
                         pos_match = p
                         break
 
         # Case A: Bot thought a trade was active, but position size is now 0 (or no position found)
-        if self.position_active and pos_match is None:
-            log_info(f"Position for {self.symbol} is closed. Fetching fills for exit summary...")
+        if state["position_active"] and pos_match is None:
+            log_info(f"Position for {symbol} is closed. Fetching fills for exit summary...")
             
             # Cancel the remaining TP1 limit order if it is still open
-            if self.tp1_order_placed and self.tp1_order_id:
+            if tp1_percent > 0 and state["tp1_order_placed"] and state["tp1_order_id"]:
                 try:
-                    product_id = self.product_info.get("id")
+                    product_id = self.product_info.get(symbol, {}).get("id")
                     if product_id:
-                        log_info(f"Cancelling remaining TP1 order {self.tp1_order_id}...")
-                        self.api.cancel_order(self.tp1_order_id, product_id)
+                        log_info(f"Cancelling remaining TP1 order {state['tp1_order_id']} for {symbol}...")
+                        self.api.cancel_order(state["tp1_order_id"], product_id)
                 except Exception as ex:
-                    log_error(f"Failed to cancel TP1 order: {ex}")
+                    log_error(f"Failed to cancel TP1 order for {symbol}: {ex}")
             
             exit_price = None
             realized_pnl = 0.0
             
             # Fetch latest fills to extract realized PnL and exit price
-            res_fills = self.api.request("GET", f"/v2/fills?product_symbol={self.symbol}&limit=5")
+            res_fills = self.api.request("GET", f"/v2/fills?product_symbol={symbol}&limit=5")
             if (isinstance(res_fills, dict) and res_fills.get("success")) or isinstance(res_fills, list):
                 fills = res_fills.get("result", res_fills) if isinstance(res_fills, dict) else res_fills
                 fills.sort(key=lambda x: x.get("id", 0), reverse=True)
@@ -1026,69 +1067,65 @@ class DeltaTrendBot:
                     meta = f.get("meta_data", {})
                     new_pos = meta.get("new_position", {})
                     realized_pnl_val = float(new_pos.get("realized_pnl", 0))
-                    # Check if this is an exit fill (either has pnl, or opposite side)
-                    if realized_pnl_val != 0 or f.get("side", "").upper() != self.entry_side:
+                    if realized_pnl_val != 0 or f.get("side", "").upper() != state["entry_side"]:
                         exit_price = float(f.get("price", 0))
                         realized_pnl = realized_pnl_val
                         break
             
             if exit_price is None:
-                # Fallback to current ticker if fills couldn't be loaded
-                ticker = self.api.get_ticker(self.symbol)
+                ticker = self.api.get_ticker(symbol)
                 exit_price = float(ticker.get("close", ticker.get("mark_price", 0))) if ticker else 0.0
                 
             exit_reason = "Position Closed"
-            if self.tp2_price is not None and abs(exit_price - self.tp2_price) / self.tp2_price < 0.005:
+            if state["tp2_price"] is not None and abs(exit_price - state["tp2_price"]) / state["tp2_price"] < 0.005:
                 exit_reason = "Take Profit 2 (TP2) Hit"
-            elif self.sl_price is not None and abs(exit_price - self.sl_price) / self.sl_price < 0.005:
+            elif state["sl_price"] is not None and abs(exit_price - state["sl_price"]) / state["sl_price"] < 0.005:
                 exit_reason = "Stop Loss (SL) Hit"
                 
             usd_inr = get_usd_inr_rate()
             pnl_inr = realized_pnl * usd_inr
             
             self.send_discord_message(
-                f"🔔 **{self.symbol} Trend Trade Closed**\n"
+                f"🔔 **{symbol} Trend Trade Closed**\n"
                 f"Exit Reason: `{exit_reason}`\n"
-                f"Side: `{self.entry_side}`\n"
-                f"Contracts: `{self.entry_size}`\n"
-                f"Entry Price: `${self.entry_price:.5f}`\n"
+                f"Side: `{state['entry_side']}`\n"
+                f"Contracts: `{state['entry_size']}`\n"
+                f"Entry Price: `${state['entry_price']:.5f}`\n"
                 f"Exit Price: `${exit_price:.5f}`\n"
                 f"Realized PnL: `${realized_pnl:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)"
             )
             
-            self.position_active = False
-            self.entry_price = None
-            self.tp1_price = None
-            self.tp2_price = None
-            self.tp_price = None
-            self.sl_price = None
-            self.entry_side = None
-            self.entry_size = None
-            self.tp1_order_placed = False
-            self.tp1_order_id = None
-            self.is_breakeven_active = False
+            state["position_active"] = False
+            state["entry_price"] = None
+            state["tp1_price"] = None
+            state["tp2_price"] = None
+            state["tp_price"] = None
+            state["sl_price"] = None
+            state["entry_side"] = None
+            state["entry_size"] = None
+            state["tp1_order_placed"] = False
+            state["tp1_order_id"] = None
+            state["is_breakeven_active"] = False
             self.save_trade_state()
             
         # Case B: Bot thought no trade was active, but an open position is found (e.g. startup recovery or manual trade)
-        elif not self.position_active and pos_match is not None:
-            self.position_active = True
-            self.entry_price = float(pos_match.get("entry_price", 0))
+        elif not state["position_active"] and pos_match is not None:
+            state["position_active"] = True
+            state["entry_price"] = float(pos_match.get("entry_price", 0))
             size = float(pos_match.get("size", 0))
-            self.entry_side = "BUY" if size > 0 else "SELL"
-            self.entry_size = abs(size)
+            state["entry_side"] = "BUY" if size > 0 else "SELL"
+            state["entry_size"] = abs(size)
             
-            # Reconstruct SL, TP1, TP2 using mid_band computed in scanning
-            self.sl_price = None
-            self.tp1_price = None
-            self.tp2_price = None
-            self.tp_price = None
-            self.tp1_order_placed = False
-            self.tp1_order_id = None
-            self.is_breakeven_active = False
+            state["sl_price"] = None
+            state["tp1_price"] = None
+            state["tp2_price"] = None
+            state["tp_price"] = None
+            state["tp1_order_placed"] = False
+            state["tp1_order_id"] = None
+            state["is_breakeven_active"] = False
             
             try:
-                # Fetch completed candles to reconstruct channel
-                candles = self.api.get_candles(self.symbol, self.resolution, limit=100)
+                candles = self.api.get_candles(symbol, self.resolution, limit=100)
                 if len(candles) >= self.channel_period + 2:
                     completed_candles = candles[:-1]
                     ha_candles = convert_to_heikin_ashi(completed_candles)
@@ -1097,109 +1134,109 @@ class DeltaTrendBot:
                     curr_lower = min([c['low'] for c in channel_curr])
                     mid_band = (curr_upper + curr_lower) / 2.0
                     
-                    self.sl_price = mid_band
-                    price_distance = abs(self.entry_price - self.sl_price)
-                    if self.entry_side == "BUY":
-                        self.tp1_price = self.entry_price + (self.tp1_ratio * price_distance)
-                        self.tp2_price = self.entry_price + (self.tp2_ratio * price_distance)
+                    state["sl_price"] = mid_band
+                    price_distance = abs(state["entry_price"] - state["sl_price"])
+                    if state["entry_side"] == "BUY":
+                        state["tp1_price"] = state["entry_price"] + (tp1_ratio * price_distance)
+                        state["tp2_price"] = state["entry_price"] + (tp2_ratio * price_distance)
                     else:
-                        self.tp1_price = self.entry_price - (self.tp1_ratio * price_distance)
-                        self.tp2_price = self.entry_price - (self.tp2_ratio * price_distance)
-                    self.tp_price = self.tp2_price
+                        state["tp1_price"] = state["entry_price"] - (tp1_ratio * price_distance)
+                        state["tp2_price"] = state["entry_price"] - (tp2_ratio * price_distance)
+                    state["tp_price"] = state["tp2_price"]
                     
-                    # Check if TP1 order is already open
-                    product_id = self.product_info.get("id")
-                    if product_id:
+                    # Check if TP1 order is already open on exchange
+                    product_id = self.product_info.get(symbol, {}).get("id")
+                    if tp1_percent > 0 and product_id:
                         open_orders = self.api.get_open_orders(product_id)
                         for o in open_orders:
-                            if o.get("order_type") == "limit_order" and abs(float(o.get("limit_price", 0)) - self.tp1_price) / self.tp1_price < 0.002:
-                                self.tp1_order_placed = True
-                                self.tp1_order_id = o.get("id")
-                                log_info(f"Recovered TP1 open order during startup: ID={self.tp1_order_id}")
+                            if o.get("order_type") == "limit_order" and abs(float(o.get("limit_price", 0)) - state["tp1_price"]) / state["tp1_price"] < 0.002:
+                                state["tp1_order_placed"] = True
+                                state["tp1_order_id"] = o.get("id")
+                                log_info(f"[{symbol}] Recovered TP1 open order during startup: ID={state['tp1_order_id']}")
                                 break
             except Exception as ex:
-                log_error(f"Failed to reconstruct levels during startup recovery: {ex}")
+                log_error(f"Failed to reconstruct levels for {symbol} during startup recovery: {ex}")
                 
-            log_info(f"Synchronized active position from exchange: Side={self.entry_side}, Size={self.entry_size}, Entry=${self.entry_price:.5f}")
+            log_info(f"[{symbol}] Synchronized active position from exchange: Side={state['entry_side']}, Size={state['entry_size']}, Entry=${state['entry_price']:.5f}")
             self.save_trade_state()
 
         # Case C: Bot thought trade was active, and position is still active (normal monitoring)
-        elif self.position_active and pos_match is not None:
-            product_id = self.product_info.get("id")
+        elif state["position_active"] and pos_match is not None:
+            product_id = self.product_info.get(symbol, {}).get("id")
             if not product_id:
                 return
                 
             # 1. Place TP1 limit order if it hasn't been placed yet
-            if not self.tp1_order_placed and self.tp1_price is not None:
-                step_size = self.product_info.get("step_size", 1.0)
-                tp1_size = floor_step(self.entry_size * (self.tp1_percent / 100.0), step_size)
+            if tp1_percent > 0 and not state["tp1_order_placed"] and state["tp1_price"] is not None:
+                step_size = self.product_info.get(symbol, {}).get("step_size", 1.0)
+                tp1_size = floor_step(state["entry_size"] * (tp1_percent / 100.0), step_size)
                 if tp1_size > 0:
-                    log_info(f"Placing TP1 reduce_only limit order: Size={tp1_size} contracts at ${self.tp1_price:.5f}")
-                    side = "sell" if self.entry_side == "BUY" else "buy"
+                    log_info(f"[{symbol}] Placing TP1 reduce_only limit order: Size={tp1_size} contracts at ${state['tp1_price']:.5f}")
+                    side = "sell" if state["entry_side"] == "BUY" else "buy"
                     res_tp1 = self.api.place_reduce_only_limit_order(
                         product_id=product_id,
                         size=tp1_size,
                         side=side,
-                        limit_price=self.tp1_price
+                        limit_price=state["tp1_price"]
                     )
                     if res_tp1.get("success"):
-                        self.tp1_order_placed = True
-                        self.tp1_order_id = res_tp1.get("result", {}).get("id")
-                        log_success(f"TP1 order placed successfully: ID={self.tp1_order_id}")
+                        state["tp1_order_placed"] = True
+                        state["tp1_order_id"] = res_tp1.get("result", {}).get("id")
+                        log_success(f"[{symbol}] TP1 order placed successfully: ID={state['tp1_order_id']}")
                         self.save_trade_state()
                     else:
-                        log_error(f"Failed to place TP1 limit order: {res_tp1}")
+                        log_error(f"[{symbol}] Failed to place TP1 limit order: {res_tp1}")
             
             # 2. Check if TP1 order has been filled
-            if self.tp1_order_placed and self.tp1_price is not None:
+            if tp1_percent > 0 and state["tp1_order_placed"] and state["tp1_price"] is not None:
                 current_size = abs(float(pos_match.get("size", 0)))
-                step_size = self.product_info.get("step_size", 1.0)
-                tp1_size = floor_step(self.entry_size * (self.tp1_percent / 100.0), step_size)
-                expected_remaining_size = self.entry_size - tp1_size
+                step_size = self.product_info.get(symbol, {}).get("step_size", 1.0)
+                tp1_size = floor_step(state["entry_size"] * (tp1_percent / 100.0), step_size)
+                expected_remaining_size = state["entry_size"] - tp1_size
                 
                 if current_size <= expected_remaining_size + 0.0001:
-                    log_success(f"TP1 order was filled! Remaining position size: {current_size} contracts")
+                    log_success(f"[{symbol}] TP1 order was filled! Remaining position size: {current_size} contracts")
                     self.send_discord_message(
-                        f"🔔 **{self.symbol} Trend TP1 Hit** at `${self.tp1_price:.5f}`!\n"
-                        f"Closed 25% of position. Remaining: `{current_size}` contracts."
+                        f"🔔 **{symbol} Trend TP1 Hit** at `${state['tp1_price']:.5f}`!\n"
+                        f"Closed {tp1_percent}% of position. Remaining: `{current_size}` contracts."
                     )
-                    self.tp1_order_placed = False
-                    self.tp1_order_id = None
-                    self.entry_size = current_size
+                    state["tp1_order_placed"] = False
+                    state["tp1_order_id"] = None
+                    state["entry_size"] = current_size
                     self.save_trade_state()
                     
             # 3. Check breakeven trigger
-            if self.use_breakeven and not self.is_breakeven_active and self.tp2_price is not None:
+            if use_breakeven and not state["is_breakeven_active"] and state["tp2_price"] is not None:
                 current_price = float(pos_match.get("mark_price", 0))
                 if current_price <= 0:
-                    ticker = self.api.get_ticker(self.symbol)
+                    ticker = self.api.get_ticker(symbol)
                     current_price = float(ticker.get("close", ticker.get("mark_price", 0))) if ticker else 0.0
                     
-                price_distance = abs(self.tp2_price - self.entry_price) / self.tp2_ratio
+                price_distance = abs(state["tp2_price"] - state["entry_price"]) / tp2_ratio
                 be_triggered = False
-                if self.entry_side == "BUY" and current_price >= self.entry_price + (self.breakeven_trigger * price_distance):
+                if state["entry_side"] == "BUY" and current_price >= state["entry_price"] + (breakeven_trigger * price_distance):
                     be_triggered = True
-                elif self.entry_side == "SELL" and current_price <= self.entry_price - (self.breakeven_trigger * price_distance):
+                elif state["entry_side"] == "SELL" and current_price <= state["entry_price"] - (breakeven_trigger * price_distance):
                     be_triggered = True
                     
                 if be_triggered:
-                    log_info(f"Price reached breakeven trigger (+{self.breakeven_trigger}R). Modifying Stop Loss to entry price (${self.entry_price:.5f})...")
+                    log_info(f"[{symbol}] Price reached breakeven trigger (+{breakeven_trigger}R). Modifying Stop Loss to entry price (${state['entry_price']:.5f})...")
                     res_be = self.api.edit_bracket_order(
                         product_id=product_id,
-                        stop_loss_price=self.entry_price,
-                        take_profit_price=self.tp2_price
+                        stop_loss_price=state["entry_price"],
+                        take_profit_price=state["tp2_price"]
                     )
                     if res_be.get("success"):
-                        self.is_breakeven_active = True
-                        self.sl_price = self.entry_price
-                        log_success("Stop Loss moved to Breakeven successfully on exchange.")
+                        state["is_breakeven_active"] = True
+                        state["sl_price"] = state["entry_price"]
+                        log_success(f"[{symbol}] Stop Loss moved to Breakeven successfully on exchange.")
                         self.send_discord_message(
-                            f"🔔 **{self.symbol} Stop Loss Moved to Breakeven** at `${self.entry_price:.5f}`\n"
-                            f"Price crossed +1.5R trigger."
+                            f"🔔 **{symbol} Stop Loss Moved to Breakeven** at `${state['entry_price']:.5f}`\n"
+                            f"Price crossed +{breakeven_trigger}R trigger."
                         )
                         self.save_trade_state()
                     else:
-                        log_error(f"Failed to modify Stop Loss to breakeven: {res_be}")
+                        log_error(f"[{symbol}] Failed to modify Stop Loss to breakeven: {res_be}")
 
     def start(self):
         log_info("Starting Donchian Trend Following Bot...")
@@ -1208,15 +1245,17 @@ class DeltaTrendBot:
             return
             
         log_success("Trend Bot is active and running.")
-        self.send_discord_message(f"🚀 **{self.symbol} Trend Bot is active and scanning on Render!** (Resolution: `{self.resolution}`)")
+        symbols_str = ", ".join(self.symbols)
+        self.send_discord_message(f"🚀 **Trend Bot ({symbols_str}) is active and scanning on Render!** (Resolution: `{self.resolution}`)")
         
         while True:
-            try:
-                self.check_position_exits()
-                self.scan_market()
-            except Exception as e:
-                log_error(f"Error in scan loop: {e}")
-                self.send_discord_message(f"❌ **XRP Trend Bot Loop Error:** `{str(e)}`")
+            for symbol in self.symbols:
+                try:
+                    self.check_position_exits(symbol)
+                    self.scan_market(symbol)
+                except Exception as e:
+                    log_error(f"Error in scan loop for {symbol}: {e}")
+                    self.send_discord_message(f"❌ **{symbol} Trend Bot Loop Error:** `{str(e)}`")
             time.sleep(self.poll_interval)
 
 

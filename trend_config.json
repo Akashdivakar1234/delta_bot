@@ -11,7 +11,28 @@
   ],
   "is_testnet": false,
   "use_india_delta": true,
+  "symbols": ["BIOUSD", "ETHUSD", "SOLUSD"],
   "symbol": "BIOUSD",
+  "symbol_settings": {
+    "BIOUSD": {
+      "use_breakeven": true,
+      "tp1_percent": 25.0,
+      "target_rr_ratio": 5.0,
+      "leverage": 5
+    },
+    "ETHUSD": {
+      "use_breakeven": false,
+      "tp1_percent": 0.0,
+      "target_rr_ratio": 5.0,
+      "leverage": 5
+    },
+    "SOLUSD": {
+      "use_breakeven": false,
+      "tp1_percent": 0.0,
+      "target_rr_ratio": 5.0,
+      "leverage": 5
+    }
+  },
   "capital_mode": "auto",
   "static_capital_inr": 350.0,
   "risk_percent": 3.0,
