@@ -558,7 +558,7 @@ class DeltaReversionBot:
                 if res.get("success") or isinstance(res, list):
                     balances = res.get("result", res) if isinstance(res, dict) else res
                     for bal in balances:
-                        symbol = bal.get("symbol", "").upper()
+                        symbol = bal.get("asset_symbol", bal.get("symbol", "")).upper()
                         val = float(bal.get("available_balance", bal.get("balance", 0.0)))
                         if symbol == "INR":
                             capital += val
