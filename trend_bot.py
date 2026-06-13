@@ -1161,14 +1161,16 @@ class DeltaTrendBot:
                         curr_lower = min([c['low'] for c in channel_curr])
                         mid_band = (curr_upper + curr_lower) / 2.0
                         
+                        tick_size = self.product_info.get(symbol, {}).get("tick_size", 0.01)
                         if state["sl_price"] is None:
-                            state["sl_price"] = mid_band
+                            state["sl_price"] = round_step(mid_band, tick_size)
                         if state["tp2_price"] is None:
                             price_distance = abs(state["entry_price"] - state["sl_price"])
                             if state["entry_side"] == "BUY":
-                                state["tp2_price"] = state["entry_price"] + (tp2_ratio * price_distance)
+                                tp2_raw = state["entry_price"] + (tp2_ratio * price_distance)
                             else:
-                                state["tp2_price"] = state["entry_price"] - (tp2_ratio * price_distance)
+                                tp2_raw = state["entry_price"] - (tp2_ratio * price_distance)
+                            state["tp2_price"] = round_step(tp2_raw, tick_size)
                             state["tp_price"] = state["tp2_price"]
 
                 # Calculate TP1 price from recovered or calculated SL/TP2
@@ -1180,9 +1182,12 @@ class DeltaTrendBot:
                         price_distance = abs(state["entry_price"] - state["sl_price"])
                         
                     if state["entry_side"] == "BUY":
-                        state["tp1_price"] = state["entry_price"] + (tp1_ratio * price_distance)
+                        tp1_raw = state["entry_price"] + (tp1_ratio * price_distance)
                     else:
-                        state["tp1_price"] = state["entry_price"] - (tp1_ratio * price_distance)
+                        tp1_raw = state["entry_price"] - (tp1_ratio * price_distance)
+                        
+                    tick_size = self.product_info.get(symbol, {}).get("tick_size", 0.01)
+                    state["tp1_price"] = round_step(tp1_raw, tick_size)
                         
                 # Check if TP1 order is already open on exchange
                 if tp1_percent > 0 and product_id:
