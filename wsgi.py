@@ -256,6 +256,50 @@ def cancel_order():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
+@app.route("/place_order")
+def place_order_debug():
+    try:
+        from flask import request
+        product_id = request.args.get("product_id")
+        size = request.args.get("size")
+        side = request.args.get("side")
+        limit_price = request.args.get("limit_price")
+        
+        if not (product_id and size and side and limit_price):
+            return jsonify({"success": False, "error": "product_id, size, side, limit_price are required"})
+            
+        with open("reversion_config.json", "r") as f:
+            config = json.load(f)
+        k = config["keys"][0]
+        
+        base_url = "https://api.india.delta.exchange"
+        
+        t_stamp = int(time.time())
+        endpoint = "/v2/orders"
+        payload = {
+            "product_id": int(product_id),
+            "size": int(size),
+            "side": side.lower(),
+            "order_type": "limit_order",
+            "limit_price": str(limit_price),
+            "reduce_only": True,
+            "post_only": False
+        }
+        body_str = json.dumps(payload)
+        message = "POST" + str(t_stamp) + endpoint + body_str
+        sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+        
+        headers = {
+            "api-key": k["api_key"],
+            "signature": sig,
+            "timestamp": str(t_stamp),
+            "Content-Type": "application/json"
+        }
+        res = requests.post(f"{base_url}{endpoint}", json=payload, headers=headers, timeout=10)
+        return jsonify(res.json())
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 @app.route("/api")
 def api_proxy():
     try:

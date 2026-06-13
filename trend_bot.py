@@ -1227,6 +1227,15 @@ class DeltaTrendBot:
                         self.save_trade_state()
                     else:
                         log_error(f"[{symbol}] Failed to place TP1 limit order: {res_tp1}")
+                        try:
+                            import json, os
+                            status = {"latest_error": f"ERROR [{symbol}]: Failed to place TP1 - {res_tp1.get('error', res_tp1)}"}
+                            if os.path.exists("bot_status.json"):
+                                with open("bot_status.json", "r") as f:
+                                    status = {**json.load(f), **status}
+                            with open("bot_status.json", "w") as f:
+                                json.dump(status, f)
+                        except: pass
             
             # 2. Check if TP1 order has been filled
             if tp1_percent > 0 and state["tp1_order_placed"] and state["tp1_price"] is not None:
