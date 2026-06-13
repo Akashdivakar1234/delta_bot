@@ -879,6 +879,8 @@ class DeltaReversionBot:
                 if product_id:
                     open_orders = self.api.get_open_orders(product_id)
                     for o in open_orders:
+                        if int(o.get("product_id", 0)) != int(product_id):
+                            continue
                         if o.get("stop_order_type") == "stop_loss_order" and o.get("stop_price"):
                             self.sl_price = float(o.get("stop_price"))
                         elif o.get("stop_order_type") == "take_profit_order" and o.get("stop_price"):

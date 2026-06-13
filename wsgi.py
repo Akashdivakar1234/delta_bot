@@ -219,6 +219,43 @@ def debug_state():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
+@app.route("/cancel_order")
+def cancel_order():
+    try:
+        from flask import request
+        order_id = request.args.get("order_id")
+        product_id = request.args.get("product_id")
+        if not (order_id and product_id):
+            return jsonify({"success": False, "error": "order_id and product_id are required"})
+            
+        with open("reversion_config.json", "r") as f:
+            config = json.load(f)
+        k = config["keys"][0]
+        
+        base_url = "https://api.india.delta.exchange"
+        
+        # Build headers
+        t_stamp = int(time.time())
+        endpoint = "/v2/orders"
+        payload = {
+            "id": int(order_id),
+            "product_id": int(product_id)
+        }
+        body_str = json.dumps(payload)
+        message = "DELETE" + str(t_stamp) + endpoint + body_str
+        sig = hmac.new(k["api_secret"].encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+        
+        headers = {
+            "api-key": k["api_key"],
+            "signature": sig,
+            "timestamp": str(t_stamp),
+            "Content-Type": "application/json"
+        }
+        res = requests.delete(f"{base_url}{endpoint}", json=payload, headers=headers, timeout=10)
+        return jsonify(res.json())
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 @app.route("/api")
 def api_proxy():
     try:

@@ -1142,6 +1142,8 @@ class DeltaTrendBot:
                 if product_id:
                     open_orders = self.api.get_open_orders(product_id)
                     for o in open_orders:
+                        if int(o.get("product_id", 0)) != int(product_id):
+                            continue
                         if o.get("stop_order_type") == "stop_loss_order" and o.get("stop_price"):
                             state["sl_price"] = float(o.get("stop_price"))
                         elif o.get("stop_order_type") == "take_profit_order" and o.get("stop_price"):
@@ -1186,6 +1188,8 @@ class DeltaTrendBot:
                 if tp1_percent > 0 and product_id:
                     open_orders = self.api.get_open_orders(product_id)
                     for o in open_orders:
+                        if int(o.get("product_id", 0)) != int(product_id):
+                            continue
                         if o.get("order_type") == "limit_order" and state["tp1_price"] is not None and abs(float(o.get("limit_price", 0)) - state["tp1_price"]) / state["tp1_price"] < 0.002:
                             state["tp1_order_placed"] = True
                             state["tp1_order_id"] = o.get("id")
