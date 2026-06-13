@@ -1025,7 +1025,8 @@ class DeltaTrendBot:
             return
 
         # 2. REAL MODE EXIT CHECKING
-        res = self.api.request("GET", "/v2/positions")
+        underlying_asset = symbol.replace("USD", "")
+        res = self.api.request("GET", f"/v2/positions?underlying_asset_symbol={underlying_asset}")
         
         success = False
         positions = []
@@ -1137,35 +1138,59 @@ class DeltaTrendBot:
             state["is_breakeven_active"] = False
             
             try:
-                candles = self.api.get_candles(symbol, self.resolution, limit=100)
-                if len(candles) >= self.channel_period + 2:
-                    completed_candles = candles[:-1]
-                    ha_candles = convert_to_heikin_ashi(completed_candles)
-                    channel_curr = ha_candles[-(self.channel_period + 1):-1]
-                    curr_upper = max([c['high'] for c in channel_curr])
-                    curr_lower = min([c['low'] for c in channel_curr])
-                    mid_band = (curr_upper + curr_lower) / 2.0
-                    
-                    state["sl_price"] = mid_band
-                    price_distance = abs(state["entry_price"] - state["sl_price"])
+                product_id = self.product_info.get(symbol, {}).get("id")
+                if product_id:
+                    open_orders = self.api.get_open_orders(product_id)
+                    for o in open_orders:
+                        if o.get("stop_order_type") == "stop_loss_order" and o.get("stop_price"):
+                            state["sl_price"] = float(o.get("stop_price"))
+                        elif o.get("stop_order_type") == "take_profit_order" and o.get("stop_price"):
+                            state["tp2_price"] = float(o.get("stop_price"))
+                            state["tp_price"] = state["tp2_price"]
+                            
+                # Fallback to Donchian Channel calculation if SL/TP2 orders not found
+                if state["sl_price"] is None or state["tp2_price"] is None:
+                    candles = self.api.get_candles(symbol, self.resolution, limit=100)
+                    if len(candles) >= self.channel_period + 2:
+                        completed_candles = candles[:-1]
+                        ha_candles = convert_to_heikin_ashi(completed_candles)
+                        channel_curr = ha_candles[-(self.channel_period + 1):-1]
+                        curr_upper = max([c['high'] for c in channel_curr])
+                        curr_lower = min([c['low'] for c in channel_curr])
+                        mid_band = (curr_upper + curr_lower) / 2.0
+                        
+                        if state["sl_price"] is None:
+                            state["sl_price"] = mid_band
+                        if state["tp2_price"] is None:
+                            price_distance = abs(state["entry_price"] - state["sl_price"])
+                            if state["entry_side"] == "BUY":
+                                state["tp2_price"] = state["entry_price"] + (tp2_ratio * price_distance)
+                            else:
+                                state["tp2_price"] = state["entry_price"] - (tp2_ratio * price_distance)
+                            state["tp_price"] = state["tp2_price"]
+
+                # Calculate TP1 price from recovered or calculated SL/TP2
+                if state["sl_price"] is not None and state["tp2_price"] is not None:
+                    if abs(state["sl_price"] - state["entry_price"]) < 0.0001:
+                        state["is_breakeven_active"] = True
+                        price_distance = abs(state["tp2_price"] - state["entry_price"]) / tp2_ratio
+                    else:
+                        price_distance = abs(state["entry_price"] - state["sl_price"])
+                        
                     if state["entry_side"] == "BUY":
                         state["tp1_price"] = state["entry_price"] + (tp1_ratio * price_distance)
-                        state["tp2_price"] = state["entry_price"] + (tp2_ratio * price_distance)
                     else:
                         state["tp1_price"] = state["entry_price"] - (tp1_ratio * price_distance)
-                        state["tp2_price"] = state["entry_price"] - (tp2_ratio * price_distance)
-                    state["tp_price"] = state["tp2_price"]
-                    
-                    # Check if TP1 order is already open on exchange
-                    product_id = self.product_info.get(symbol, {}).get("id")
-                    if tp1_percent > 0 and product_id:
-                        open_orders = self.api.get_open_orders(product_id)
-                        for o in open_orders:
-                            if o.get("order_type") == "limit_order" and abs(float(o.get("limit_price", 0)) - state["tp1_price"]) / state["tp1_price"] < 0.002:
-                                state["tp1_order_placed"] = True
-                                state["tp1_order_id"] = o.get("id")
-                                log_info(f"[{symbol}] Recovered TP1 open order during startup: ID={state['tp1_order_id']}")
-                                break
+                        
+                # Check if TP1 order is already open on exchange
+                if tp1_percent > 0 and product_id:
+                    open_orders = self.api.get_open_orders(product_id)
+                    for o in open_orders:
+                        if o.get("order_type") == "limit_order" and state["tp1_price"] is not None and abs(float(o.get("limit_price", 0)) - state["tp1_price"]) / state["tp1_price"] < 0.002:
+                            state["tp1_order_placed"] = True
+                            state["tp1_order_id"] = o.get("id")
+                            log_info(f"[{symbol}] Recovered TP1 open order during startup: ID={state['tp1_order_id']}")
+                            break
             except Exception as ex:
                 log_error(f"Failed to reconstruct levels for {symbol} during startup recovery: {ex}")
                 

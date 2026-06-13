@@ -781,7 +781,8 @@ class DeltaReversionBot:
             return
 
         # 2. REAL MODE EXIT CHECKING
-        res = self.api.request("GET", "/v2/positions")
+        underlying_asset = self.symbol.replace("USD", "")
+        res = self.api.request("GET", f"/v2/positions?underlying_asset_symbol={underlying_asset}")
         
         success = False
         positions = []
@@ -869,9 +870,22 @@ class DeltaReversionBot:
             size = float(pos_match.get("size", 0))
             self.entry_side = "BUY" if size > 0 else "SELL"
             self.entry_size = abs(size)
-            # TP and SL are unknown since we recovered state from live position
+            
+            # Retrieve SL and TP prices from open orders on the exchange
             self.tp_price = None
             self.sl_price = None
+            try:
+                product_id = self.product_info.get(self.symbol, {}).get("id")
+                if product_id:
+                    open_orders = self.api.get_open_orders(product_id)
+                    for o in open_orders:
+                        if o.get("stop_order_type") == "stop_loss_order" and o.get("stop_price"):
+                            self.sl_price = float(o.get("stop_price"))
+                        elif o.get("stop_order_type") == "take_profit_order" and o.get("stop_price"):
+                            self.tp_price = float(o.get("stop_price"))
+            except Exception as ex:
+                log_error(f"Failed to recover bracket levels for {self.symbol} during startup recovery: {ex}")
+                
             log_info(f"Synchronized active position from exchange: Side={self.entry_side}, Size={self.entry_size}, Entry=${self.entry_price:.5f}")
             self.save_trade_state()
 
