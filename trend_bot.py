@@ -999,6 +999,8 @@ class DeltaTrendBot:
             if triggered:
                 usd_inr = get_usd_inr_rate()
                 pnl_inr = pnl_usd * usd_inr
+                sign_usd = "-" if pnl_usd < 0 else "+" if pnl_usd > 0 else ""
+                sign_inr = "-" if pnl_inr < 0 else "+" if pnl_inr > 0 else ""
                 self.send_discord_message(
                     f"🔔 **[MOCK] {symbol} Trend Trade Closed**\n"
                     f"Exit Reason: `{exit_reason}`\n"
@@ -1006,7 +1008,7 @@ class DeltaTrendBot:
                     f"Contracts: `{state['entry_size']}`\n"
                     f"Entry Price: `${state['entry_price']:.5f}`\n"
                     f"Exit Price: `${exit_price:.5f}`\n"
-                    f"Realized PnL: `${pnl_usd:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)"
+                    f"Realized PnL: `{sign_usd}${abs(pnl_usd):.2f} USD` (approx `{sign_inr}₹{abs(pnl_inr):.2f} INR`)"
                 )
                 state["position_active"] = False
                 state["entry_price"] = None
@@ -1024,22 +1026,27 @@ class DeltaTrendBot:
 
         # 2. REAL MODE EXIT CHECKING
         res = self.api.request("GET", "/v2/positions")
-        pos_match = None
-        if isinstance(res, dict) and res.get("success"):
+        
+        success = False
+        positions = []
+        if isinstance(res, dict):
+            success = res.get("success", False)
             positions = res.get("result", [])
-            for p in positions:
-                if p.get("product_symbol") == symbol:
-                    size = float(p.get("size", 0))
-                    if size != 0:
-                        pos_match = p
-                        break
         elif isinstance(res, list):
-            for p in res:
-                if p.get("product_symbol") == symbol:
-                    size = float(p.get("size", 0))
-                    if size != 0:
-                        pos_match = p
-                        break
+            success = True
+            positions = res
+            
+        if not success:
+            log_warning(f"[{symbol}] Failed to fetch positions from exchange. Skipping exit check for this cycle.")
+            return
+
+        pos_match = None
+        for p in positions:
+            if p.get("product_symbol") == symbol:
+                size = float(p.get("size", 0))
+                if size != 0:
+                    pos_match = p
+                    break
 
         # Case A: Bot thought a trade was active, but position size is now 0 (or no position found)
         if state["position_active"] and pos_match is None:
@@ -1058,12 +1065,15 @@ class DeltaTrendBot:
             exit_price = None
             realized_pnl = 0.0
             
-            # Fetch latest fills to extract realized PnL and exit price
-            res_fills = self.api.request("GET", f"/v2/fills?product_symbol={symbol}&limit=5")
+            # Fetch latest fills to extract realized PnL and exit price (request 10 to ensure we see our symbol)
+            res_fills = self.api.request("GET", f"/v2/fills?product_symbol={symbol}&limit=10")
             if (isinstance(res_fills, dict) and res_fills.get("success")) or isinstance(res_fills, list):
                 fills = res_fills.get("result", res_fills) if isinstance(res_fills, dict) else res_fills
                 fills.sort(key=lambda x: x.get("id", 0), reverse=True)
                 for f in fills:
+                    # Filter fills for this symbol specifically
+                    if f.get("product_symbol") != symbol:
+                        continue
                     meta = f.get("meta_data", {})
                     new_pos = meta.get("new_position", {})
                     realized_pnl_val = float(new_pos.get("realized_pnl", 0))
@@ -1085,6 +1095,8 @@ class DeltaTrendBot:
             usd_inr = get_usd_inr_rate()
             pnl_inr = realized_pnl * usd_inr
             
+            sign_usd = "-" if realized_pnl < 0 else "+" if realized_pnl > 0 else ""
+            sign_inr = "-" if pnl_inr < 0 else "+" if pnl_inr > 0 else ""
             self.send_discord_message(
                 f"🔔 **{symbol} Trend Trade Closed**\n"
                 f"Exit Reason: `{exit_reason}`\n"
@@ -1092,7 +1104,7 @@ class DeltaTrendBot:
                 f"Contracts: `{state['entry_size']}`\n"
                 f"Entry Price: `${state['entry_price']:.5f}`\n"
                 f"Exit Price: `${exit_price:.5f}`\n"
-                f"Realized PnL: `${realized_pnl:.2f} USD` (approx `₹{pnl_inr:.2f} INR`)"
+                f"Realized PnL: `{sign_usd}${abs(realized_pnl):.2f} USD` (approx `{sign_inr}₹{abs(pnl_inr):.2f} INR`)"
             )
             
             state["position_active"] = False
