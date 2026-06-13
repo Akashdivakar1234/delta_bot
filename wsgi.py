@@ -200,6 +200,25 @@ def stats():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
+@app.route("/debug_state")
+def debug_state():
+    try:
+        state_trend = {}
+        state_rev = {}
+        if os.path.exists("active_trade_trend.json"):
+            with open("active_trade_trend.json", "r") as f:
+                state_trend = json.load(f)
+        if os.path.exists("active_trade_reversion.json"):
+            with open("active_trade_reversion.json", "r") as f:
+                state_rev = json.load(f)
+        return jsonify({
+            "active_trade_trend": state_trend,
+            "active_trade_reversion": state_rev,
+            "status_file": json.load(open("bot_status.json", "r")) if os.path.exists("bot_status.json") else {}
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 @app.route("/api")
 def api_proxy():
     try:
