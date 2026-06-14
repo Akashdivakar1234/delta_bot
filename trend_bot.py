@@ -999,8 +999,8 @@ class DeltaTrendBot:
             if triggered:
                 usd_inr = get_usd_inr_rate()
                 pnl_inr = pnl_usd * usd_inr
-                sign_usd = "-" if pnl_usd < 0 else "+" if pnl_usd > 0 else ""
-                sign_inr = "-" if pnl_inr < 0 else "+" if pnl_inr > 0 else ""
+                pnl_usd_str = f"-${abs(pnl_usd):.2f}" if pnl_usd < 0 else f"+${abs(pnl_usd):.2f}" if pnl_usd > 0 else "$0.00"
+                pnl_inr_str = f"-₹{abs(pnl_inr):.2f}" if pnl_inr < 0 else f"+₹{abs(pnl_inr):.2f}" if pnl_inr > 0 else "₹0.00"
                 self.send_discord_message(
                     f"🔔 **[MOCK] {symbol} Trend Trade Closed**\n"
                     f"Exit Reason: `{exit_reason}`\n"
@@ -1008,7 +1008,7 @@ class DeltaTrendBot:
                     f"Contracts: `{state['entry_size']}`\n"
                     f"Entry Price: `${state['entry_price']:.5f}`\n"
                     f"Exit Price: `${exit_price:.5f}`\n"
-                    f"Realized PnL: `{sign_usd}${abs(pnl_usd):.2f} USD` (approx `{sign_inr}₹{abs(pnl_inr):.2f} INR`)"
+                    f"Realized PnL: `{pnl_usd_str} USD` (approx `{pnl_inr_str} INR`)"
                 )
                 state["position_active"] = False
                 state["entry_price"] = None
@@ -1070,7 +1070,7 @@ class DeltaTrendBot:
             res_fills = self.api.request("GET", f"/v2/fills?product_symbol={symbol}&limit=10")
             if (isinstance(res_fills, dict) and res_fills.get("success")) or isinstance(res_fills, list):
                 fills = res_fills.get("result", res_fills) if isinstance(res_fills, dict) else res_fills
-                fills.sort(key=lambda x: x.get("id", 0), reverse=True)
+                fills.sort(key=lambda x: x.get("created_at", ""), reverse=True)
                 for f in fills:
                     # Filter fills for this symbol specifically
                     if f.get("product_symbol") != symbol:
@@ -1096,8 +1096,8 @@ class DeltaTrendBot:
             usd_inr = get_usd_inr_rate()
             pnl_inr = realized_pnl * usd_inr
             
-            sign_usd = "-" if realized_pnl < 0 else "+" if realized_pnl > 0 else ""
-            sign_inr = "-" if pnl_inr < 0 else "+" if pnl_inr > 0 else ""
+            pnl_usd_str = f"-${abs(realized_pnl):.2f}" if realized_pnl < 0 else f"+${abs(realized_pnl):.2f}" if realized_pnl > 0 else "$0.00"
+            pnl_inr_str = f"-₹{abs(pnl_inr):.2f}" if pnl_inr < 0 else f"+₹{abs(pnl_inr):.2f}" if pnl_inr > 0 else "₹0.00"
             self.send_discord_message(
                 f"🔔 **{symbol} Trend Trade Closed**\n"
                 f"Exit Reason: `{exit_reason}`\n"
@@ -1105,7 +1105,7 @@ class DeltaTrendBot:
                 f"Contracts: `{state['entry_size']}`\n"
                 f"Entry Price: `${state['entry_price']:.5f}`\n"
                 f"Exit Price: `${exit_price:.5f}`\n"
-                f"Realized PnL: `{sign_usd}${abs(realized_pnl):.2f} USD` (approx `{sign_inr}₹{abs(pnl_inr):.2f} INR`)"
+                f"Realized PnL: `{pnl_usd_str} USD` (approx `{pnl_inr_str} INR`)"
             )
             
             state["position_active"] = False
